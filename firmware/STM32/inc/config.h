@@ -27,6 +27,7 @@
 #define DISABLE_OUTER_LOOP          0       /* navigators feed kinematic split directly when 1 */
 #define DISABLE_TELEMETRY           0
 #define DISABLE_LOG_FORWARDING      0       /* log entries still recorded; just not sent over UART */
+#define DISABLE_HEADING_FUSION      0       /* 1 = pure encoder odometry (ignore IMU yaw) */
 
 /* ---- Clocks --------------------------------------------------------------- */
 #define SYSCLK_HZ                   48000000u
@@ -114,6 +115,21 @@
 
 #define PURE_PURSUIT_LOOKAHEAD_M    0.20f
 #define TRAJECTORY_CRUISE_MPS       0.3f
+#define TRAJECTORY_HEADING_KP       2.0f    /* point-and-steer angular gain */
+#define TRAJECTORY_SLOWDOWN_RAD     0.5f    /* heading error above this → halve speed */
+
+/* QTR-8A reflectance baselines (used when no flash calibration loaded yet).
+ * White surface ≈ low reading, black surface ≈ high reading on QTR-8A. */
+#define QTR_DEFAULT_WHITE           300u    /* counts on a white surface */
+#define QTR_DEFAULT_BLACK           3000u   /* counts on a black line */
+#define QTR_INVERT_ARRAY            0       /* 1 if sensor 7 is leftmost, not 0 */
+#define QTR_LINE_LOST_THRESHOLD     0.5f    /* sum-of-normalized below this → line lost */
+
+/* Heading fusion (encoder dead-reckoning + BNO055 yaw). α near 1 → trust
+ * encoder more (smooth, drifts); α near 0 → trust IMU more (noisy, no drift).
+ * 0.995 with 200 Hz control gives a ~1 second time constant on IMU correction. */
+#define HEADING_FUSION_ALPHA        0.995f
+#define HEADING_FUSION_MIN_CALIB    1u      /* require BNO055 sys-calib ≥ this to fuse */
 
 /* ---- PWM ------------------------------------------------------------------ */
 #define PWM_FREQ_HZ                 20000u  /* 20 kHz: above audible, fits Pololu G2 spec */

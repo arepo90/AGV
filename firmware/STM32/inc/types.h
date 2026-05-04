@@ -144,6 +144,16 @@ typedef enum {
 
     /* Odometry */
     LOG_CODE_ODOMETRY_RESET             = 0x0C00u,
+
+    /* Persistent storage / parameters */
+    LOG_CODE_QTR_CAL_BEGIN              = 0x0D00u,
+    LOG_CODE_QTR_CAL_END                = 0x0D01u,
+    LOG_CODE_QTR_CAL_CANCELED           = 0x0D02u,
+    LOG_CODE_QTR_CAL_INSUFFICIENT_RANGE = 0x0D03u,
+    LOG_CODE_FLASH_WRITE_FAIL           = 0x0D04u,
+    LOG_CODE_FLASH_LOAD_FAIL            = 0x0D05u,
+    LOG_CODE_FLASH_LOAD_OK              = 0x0D06u,
+    LOG_CODE_PARAM_APPLIED              = 0x0D07u,
 } log_code_t;
 
 #endif /* TYPES_H */

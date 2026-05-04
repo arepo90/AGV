@@ -39,3 +39,16 @@
 #define WS_PATH                 "/ws"
 #define WS_MAX_CLIENTS          1            /* one workstation at a time */
 #define DEBUG_LOG_BAD_FRAMES    1            /* Serial.printf on parse errors */
+
+/* ---- Stack light + buzzer ----------------------------------------------- */
+/* Wired through a 4-channel low-side MOSFET module on GPIO 0..3.
+ * Default mapping: red → 0, yellow → 1, green → 2, buzzer → 3. Swap freely. */
+#define STACK_PIN_RED           0
+#define STACK_PIN_YELLOW        1
+#define STACK_PIN_GREEN         2
+#define STACK_PIN_BUZZER        3
+
+#define STACK_LEDC_FREQ_HZ      1000u
+#define STACK_LEDC_RESOLUTION   10u       /* 1024 levels */
+
+#define STACK_TELEM_TIMEOUT_MS  2000u     /* no telemetry → DISCONNECT */

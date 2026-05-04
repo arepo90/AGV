@@ -56,6 +56,7 @@
 #define CMD_LOG_DUMP_REQUEST        0x0Au
 #define CMD_LOG_CLEAR               0x0Bu
 #define CMD_QTR_CALIBRATE           0x0Cu   /* run line-sensor calibration, persist to flash */
+#define CMD_RESET_ODOMETRY          0x0Du   /* zero pose at current location */
 
 /* ---- PARAM_UPDATE param IDs ---------------------------------------------- */
 #define PARAM_MAX_LINEAR_SPEED          0x01u
@@ -86,6 +87,11 @@
 #define PARAM_WEIGHT_ESTOP_KG           0x31u
 #define PARAM_IMBALANCE_CAUTION         0x32u
 #define PARAM_IMBALANCE_ESTOP           0x33u
+/* HX711 per-corner: the value field is f32 on the wire — for offsets we cast
+ * to int32 internally. The corner index encoded in the LOW NIBBLE; e.g.
+ * 0x34..0x37 = offsets for corners 0..3, 0x38..0x3B = scales for corners 0..3. */
+#define PARAM_HX711_OFFSET_BASE         0x34u   /* +0..+3 */
+#define PARAM_HX711_SCALE_BASE          0x38u   /* +0..+3 */
 
 /* ---- NACK error codes ---------------------------------------------------- */
 #define NACK_BAD_CRC                0x01u

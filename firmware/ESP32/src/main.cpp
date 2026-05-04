@@ -21,6 +21,7 @@
 
 #include "config.h"
 #include "frame.h"
+#include "stacklight.h"
 
 static AsyncWebServer  s_server(80);
 static AsyncWebSocket  s_ws(WS_PATH);
@@ -36,7 +37,30 @@ static AsyncWebSocketClient *s_client = nullptr;
 
 /* ---- UART side: forward complete frames to WS ---------------------------- */
 
+/* Inspect telemetry frames as they pass through and update the stack-light
+ * state. Frame layout is fixed by config.h §Packet protocol — index 4 is the
+ * TYPE byte and index 6 onward is payload. Telemetry payload byte offsets:
+ *   [0..3]   timestamp_ms
+ *   [4]      mode
+ *   [5]      function
+ *   [6]      estop_sources
+ *   [7]      caution_sources
+ * (See main.c send_telemetry() for the full layout.) */
+static void tap_telemetry(const uint8_t *frame, size_t total_len) {
+    if (total_len < 14) return;     /* header(6) + 8 bytes of telemetry */
+    uint8_t type = frame[4];
+    uint8_t len  = frame[5];
+    if (type != 0x03 /* PKT_TELEMETRY */) return;
+    if (len < 8) return;            /* too short for the fields we want */
+
+    uint8_t estop_sources   = frame[6 + 6];
+    uint8_t caution_sources = frame[6 + 7];
+    stacklight_update_from_telemetry(estop_sources, caution_sources, millis());
+}
+
 static void uart_on_complete(const uint8_t *frame, size_t total_len) {
+    tap_telemetry(frame, total_len);
+
     AsyncWebSocketClient *c = s_client;
     if (c && c->status() == WS_CONNECTED) {
         c->binary(const_cast<uint8_t *>(frame), total_len);
@@ -149,6 +173,10 @@ void setup() {
     Serial.println();
     Serial.println("[boot] AGV relay starting");
 
+    /* Stack light first so the operator gets visual feedback while the rest
+     * of bring-up runs (red breathing during INIT). */
+    stacklight_init();
+
     /* UART to STM32 */
     s_stm32.setRxBufferSize(UART_RX_BUFSIZE);
     s_stm32.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
@@ -176,5 +204,6 @@ void setup() {
 void loop() {
     uart_drain();
     s_ws.cleanupClients();
+    stacklight_tick(millis());
     /* No delay() — UART throughput at 921600 demands prompt draining. */
 }

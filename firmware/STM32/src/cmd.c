@@ -3,7 +3,13 @@
 #include "config.h"
 #include "estop.h"
 #include "heartbeat.h"
+#include "hx711.h"
 #include "log.h"
+#include "nav.h"
+#include "nav_line.h"
+#include "nav_traj.h"
+#include "odometry.h"
+#include "params.h"
 #include "state.h"
 #include "system.h"
 #include "types.h"
@@ -44,13 +50,14 @@ static void handle_set_function(const packet_t *pkt) {
 }
 
 static void handle_vel_cmd(const packet_t *pkt) {
-    /* float linear, float angular — consumed by nav_remote in next phase.
-     * For now, ACK so the protocol is exercisable end-to-end. */
     if (pkt->len < 1u + 2u * sizeof(float)) {
         comms_send_nack(pkt->seq, NACK_BAD_LENGTH);
         return;
     }
-    /* TODO(drivetrain phase): nav_remote_set_target(linear, angular); */
+    float linear, angular;
+    memcpy(&linear,  &pkt->payload[1],                    sizeof linear);
+    memcpy(&angular, &pkt->payload[1 + sizeof(float)],    sizeof angular);
+    nav_remote_set(linear, angular);
     comms_send_ack(pkt->seq, 0);
 }
 
@@ -98,11 +105,90 @@ static void handle_cmd(const packet_t *pkt) {
     case CMD_OVERRIDE_CAUTION:       handle_override_caution(pkt);  break;
     case CMD_LOG_DUMP_REQUEST:       handle_log_dump(pkt);          break;
     case CMD_LOG_CLEAR:              handle_log_clear(pkt);         break;
-    case CMD_READ_SENSOR:
-    case CMD_LOAD_TRAJECTORY:
     case CMD_START_TARE:
-    case CMD_QTR_CALIBRATE:
-        /* Implemented in later phases — placeholder NACK so workstation knows. */
+        if (state_function() != FUNC_STANDBY) {
+            comms_send_nack(pkt->seq, NACK_ILLEGAL_TRANSITION);
+        } else {
+            hx711_start_tare();
+            comms_send_ack(pkt->seq, 0);
+        }
+        break;
+
+    case CMD_LOAD_TRAJECTORY: {
+        /* Payload format:
+         *   [0]=sub, [1]=op
+         *     op=0: clear list, no further bytes
+         *     op=1: append waypoint, [2..5]=float x, [6..9]=float y
+         * The workstation issues op=0 once, then op=1 N times. Phase-7 work
+         * may add op=2 for fragmented bulk uploads above MAX_WAYPOINTS. */
+        if (pkt->len < 2) { comms_send_nack(pkt->seq, NACK_BAD_LENGTH); break; }
+        if (state_function() == FUNC_TRAJECTORY_FOLLOW) {
+            comms_send_nack(pkt->seq, NACK_ILLEGAL_TRANSITION);
+            break;
+        }
+        uint8_t op = pkt->payload[1];
+        if (op == 0) {
+            nav_traj_clear();
+            comms_send_ack(pkt->seq, 0);
+        } else if (op == 1) {
+            if (pkt->len < 2u + 2u * sizeof(float)) {
+                comms_send_nack(pkt->seq, NACK_BAD_LENGTH);
+                break;
+            }
+            float x, y;
+            memcpy(&x, &pkt->payload[2],                 sizeof x);
+            memcpy(&y, &pkt->payload[2 + sizeof(float)], sizeof y);
+            if (nav_traj_add(x, y)) {
+                if (nav_traj_count() == 1) {
+                    log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_TRAJECTORY_LOADED, 0);
+                }
+                comms_send_ack(pkt->seq, 0);
+            } else {
+                comms_send_nack(pkt->seq, NACK_BUSY);   /* buffer full */
+            }
+        } else {
+            comms_send_nack(pkt->seq, NACK_UNKNOWN_SUBTYPE);
+        }
+        break;
+    }
+
+    case CMD_QTR_CALIBRATE: {
+        /* Payload: [sub][op]
+         *   op=0 begin   op=1 save+persist   op=2 cancel   op=3 reset+erase */
+        if (pkt->len < 2) { comms_send_nack(pkt->seq, NACK_BAD_LENGTH); break; }
+        uint8_t op = pkt->payload[1];
+        if (state_function() != FUNC_STANDBY) {
+            comms_send_nack(pkt->seq, NACK_ILLEGAL_TRANSITION);
+            break;
+        }
+        switch (op) {
+        case 0:  nav_line_cal_begin();             comms_send_ack(pkt->seq, 0); break;
+        case 1:
+            if (nav_line_cal_save()) comms_send_ack(pkt->seq, 0);
+            else                     comms_send_nack(pkt->seq, NACK_BUSY);
+            break;
+        case 2:  nav_line_cal_cancel();            comms_send_ack(pkt->seq, 0); break;
+        case 3:
+            if (nav_line_cal_reset_defaults()) comms_send_ack(pkt->seq, 0);
+            else                               comms_send_nack(pkt->seq, NACK_BUSY);
+            break;
+        default: comms_send_nack(pkt->seq, NACK_UNKNOWN_SUBTYPE); break;
+        }
+        break;
+    }
+
+    case CMD_RESET_ODOMETRY:
+        if (state_function() != FUNC_STANDBY) {
+            comms_send_nack(pkt->seq, NACK_ILLEGAL_TRANSITION);
+        } else {
+            odometry_reset();
+            comms_send_ack(pkt->seq, 0);
+        }
+        break;
+
+    case CMD_READ_SENSOR:
+        /* Telemetry covers everything; on-demand reads are deferred until a
+         * concrete use case demands them. */
         log_record(LOG_MOD_COMMS, LOG_SEV_INFO, LOG_CODE_UNKNOWN_CMD_SUBTYPE, sub);
         comms_send_nack(pkt->seq, NACK_BUSY);
         break;
@@ -127,12 +213,14 @@ void cmd_dispatch(const packet_t *pkt) {
         handle_cmd(pkt);
         break;
 
-    case PKT_PARAM_UPDATE:
-        /* Wired up in the runtime-tunables phase. ACK silently for now so the
-         * workstation does not retry endlessly; the values aren't applied yet. */
-        log_record(LOG_MOD_COMMS, LOG_SEV_INFO, LOG_CODE_PARAM_ID_UNKNOWN, pkt->len);
-        comms_send_ack(pkt->seq, 0);
+    case PKT_PARAM_UPDATE: {
+        /* Walks N×(u8 id + f32 value) tuples. NACK if any tuple's id was
+         * unknown; ACK if all applied. (Failed tuples log individually.) */
+        uint32_t failed = params_apply_payload(pkt->payload, pkt->len);
+        if (failed == 0) comms_send_ack(pkt->seq, 0);
+        else             comms_send_nack(pkt->seq, NACK_UNKNOWN_PARAM);
         break;
+    }
 
     case PKT_RESET: {
         /* Payload byte 0: 0 = clear all E-STOP, 1 = soft-reset firmware.

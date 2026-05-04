@@ -185,6 +185,117 @@ The caution modifier is **active during `REMOTE_CONTROL`** — operator commands
 
 ---
 
+## Stack Light & Buzzer
+
+A 3-color stack light (red / yellow / green) with audible buzzer is driven from the ESP32-C3 through a 4-channel low-side MOSFET module. Each channel takes a logic-level PWM input on the MOSFET gate.
+
+| ESP32 GPIO | Channel | Default mapping |
+|---|---|---|
+| GPIO 0 | LEDC ch 0 | Red |
+| GPIO 1 | LEDC ch 1 | Yellow |
+| GPIO 2 | LEDC ch 2 | Green |
+| GPIO 3 | LEDC ch 3 | Buzzer |
+
+LEDC PWM at 1 kHz / 10-bit resolution drives each channel, so brightness is software-controlled rather than on/off. The buzzer (assumed active type) is driven the same way — full duty = on, zero duty = off; "beeping" is achieved by toggling duty in a square pattern.
+
+### State derivation
+
+The relay parses each `PKT_TELEMETRY` frame as it crosses from STM32 to the workstation. Stack-light state is computed from the telemetry payload:
+
+| Condition | Stack state |
+|---|---|
+| `estop_sources != 0` | **ESTOP** |
+| `estop_sources == 0` and `caution_sources != 0` | **CAUTION** |
+| `estop_sources == 0` and `caution_sources == 0` | **NORMAL** |
+| No telemetry seen since boot | **INIT** |
+| Telemetry stopped > 2 s | **DISCONNECT** |
+
+### Visual & audible patterns (industrial convention)
+
+| State | Red | Yellow | Green | Buzzer |
+|---|---|---|---|---|
+| `NORMAL` | off | off | solid | off |
+| `CAUTION` | off | solid | off | off |
+| `ESTOP` | breathing fast (~2 Hz, sin) | off | off | pulsing fast (~2 Hz square) |
+| `INIT` (boot) | breathing slow (~0.5 Hz) | off | off | off — silent until first telemetry |
+| `DISCONNECT` | breathing slow | off | off | pulsing slow (~1 Hz) |
+
+`INIT` is intentionally silent so a powered-on AGV with no workstation connected does not buzz — `DISCONNECT` only kicks in once telemetry has been seen and then lost, which is genuinely abnormal.
+
+State transitions are instantaneous; the breathing/pulsing animations are computed from `system_now_ms()` so they remain phase-coherent across rapid state changes.
+
+---
+
+## Workstation Operations
+
+Everything operationally meaningful is reachable through the binary protocol — there is no on-board UI for control, calibration, or tuning. The workstation is the single source of truth for everything the firmware does not own (PID gains, load-cell scale factors, runtime parameters, trajectory waypoints).
+
+### Quick reference — packet types and CMD sub-types
+
+| Operation | Packet | Sub-type | Payload | When allowed |
+|---|---|---|---|---|
+| Heartbeat tick | `PKT_HEARTBEAT` | — | empty | always |
+| Set mode | `PKT_CMD` | `0x02 SET_MODE` | `[u8 mode]` | always |
+| Set function | `PKT_CMD` | `0x01 SET_FUNCTION` | `[u8 func]` | mode-legal only |
+| Drive (REMOTE_CONTROL) | `PKT_CMD` | `0x03 VEL_CMD` | `[f32 v_mps][f32 ω_radps]` | always (only acted on in REMOTE_CONTROL) |
+| Virtual E-STOP | `PKT_CMD` | `0x04 VIRTUAL_ESTOP` | empty | always |
+| Force-clear E-STOP source | `PKT_CMD` | `0x05 OVERRIDE_ESTOP_SOURCE` | `[u8 mask]` | always |
+| Force caution modifier | `PKT_CMD` | `0x06 OVERRIDE_CAUTION` | `[f32 scalar]` | always |
+| On-demand sensor read | `PKT_CMD` | `0x07 READ_SENSOR` | `[u8 sensor_id]` | not yet implemented |
+| Trajectory clear | `PKT_CMD` | `0x08 LOAD_TRAJECTORY` | `[u8 op=0]` | not in TRAJECTORY_FOLLOW |
+| Trajectory append point | `PKT_CMD` | `0x08 LOAD_TRAJECTORY` | `[u8 op=1][f32 x][f32 y]` | not in TRAJECTORY_FOLLOW |
+| Begin tare (load cells) | `PKT_CMD` | `0x09 START_TARE` | empty | STANDBY only |
+| Dump fault log | `PKT_CMD` | `0x0A LOG_DUMP_REQUEST` | empty | always |
+| Clear fault log | `PKT_CMD` | `0x0B LOG_CLEAR` | empty | always |
+| QTR cal — begin sweep | `PKT_CMD` | `0x0C QTR_CALIBRATE` | `[u8 op=0]` | STANDBY only |
+| QTR cal — save+persist | `PKT_CMD` | `0x0C QTR_CALIBRATE` | `[u8 op=1]` | STANDBY only |
+| QTR cal — cancel | `PKT_CMD` | `0x0C QTR_CALIBRATE` | `[u8 op=2]` | STANDBY only |
+| QTR cal — defaults+erase | `PKT_CMD` | `0x0C QTR_CALIBRATE` | `[u8 op=3]` | STANDBY only |
+| Reset odometry pose | `PKT_CMD` | `0x0D RESET_ODOMETRY` | empty | STANDBY only |
+| Update parameters | `PKT_PARAM_UPDATE` | — | `N×{[u8 id][f32 value]}` | always |
+| Soft reset / clear E-STOP | `PKT_RESET` | — | empty=clear all E-STOP, `[0x01]`=soft-reset firmware | always |
+
+### Calibration procedures
+
+**Tare (load cells):**
+1. AGV in `STANDBY`, platform empty.
+2. Send `CMD_START_TARE`.
+3. Wait ~1 second; `flags` bit 3 in telemetry is set during tare and clears when done.
+4. Per-corner `corner_kg` should now read ≈ 0.
+
+**Per-corner load-cell scale (with a known reference weight):**
+1. After tare, place reference weight `W_ref` (kg) on a known corner.
+2. Read `corner_kg[i]` from telemetry — currently scaled by whatever scale is set.
+3. Workstation computes `new_scale = W_ref / (raw_counts - offset_counts)` from telemetry and sends `PKT_PARAM_UPDATE` with `id = PARAM_HX711_SCALE_BASE + i`, `value = new_scale`.
+4. Verify the now-correct reading on the same telemetry channel.
+
+The workstation should persist scale values on its side and re-send them on connect — STM32 stores them in RAM only.
+
+**QTR-8A line sensor (sweep style, persists to flash):**
+1. AGV in `STANDBY`, placed so the sensor array can sweep across a representative line.
+2. Send `CMD_QTR_CALIBRATE [op=0]`.
+3. Operator manually sweeps the array left-right over the line several times for ~3-5 seconds. Firmware records per-sensor min/max during this window.
+4. Send `CMD_QTR_CALIBRATE [op=1]` to commit. Firmware writes baselines to the last 1 KB flash page with magic + CRC; loaded automatically on next boot.
+5. To discard a sweep without committing: `[op=2]`. To erase calibration and revert to compile-time defaults: `[op=3]`.
+
+A sensor whose min/max range is below 200 ADC counts is flagged in `LOG_CODE_QTR_CAL_INSUFFICIENT_RANGE` and retains its previous baseline rather than getting a useless calibration.
+
+**Live PID tuning:**
+- Inner per-wheel: `PARAM_INNER_K{P,I,D}_{LEFT,RIGHT}` (`0x10`-`0x15`)
+- Outer chassis: `PARAM_OUTER_{LIN,ANG}_K{P,I,D}` (`0x16`-`0x1B`)
+- Send `PKT_PARAM_UPDATE` with one or more `[id, f32 value]` tuples — applied immediately. RAM-only; resend on connect.
+
+### What still requires a firmware rebuild
+
+- Pin remapping (mechanical wiring change)
+- Adding a new function or navigator
+- Changing the protocol or telemetry layout
+- Anything in `config.h` not exposed via a `PARAM_*` ID (max speeds/accels, telemetry rates, HX711 timeout, motor/encoder polarity flags, all `DISABLE_*` debug toggles)
+
+If a tunable shows up in `config.h` but is not in the param-ID table, it can be promoted to runtime-tunable by adding a `PARAM_*` constant in [comms.h](firmware/STM32/inc/comms.h) and a setter case in [params.c](firmware/STM32/src/params.c).
+
+---
+
 ## Workstation Authority
 
 The workstation is a **super-user**. It can:

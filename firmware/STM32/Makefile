@@ -15,7 +15,8 @@ CFLAGS   = $(MCU) $(INCLUDES) $(DEFINES) -Wall -Wextra $(OPT) -g3 \
            -ffunction-sections -fdata-sections -std=c11
 ASFLAGS  = $(MCU) -g3
 LDSCRIPT = stm32f051x8.ld
-LDFLAGS  = $(MCU) -T$(LDSCRIPT) -Wl,--gc-sections -Wl,-Map=$(BUILD)/$(TARGET).map -nostartfiles
+LDFLAGS  = $(MCU) -T$(LDSCRIPT) -Wl,--gc-sections -Wl,-Map=$(BUILD)/$(TARGET).map \
+           -nostartfiles --specs=nano.specs --specs=nosys.specs -lm
 
 # Glob every .c under src/ — modules can be added without editing the Makefile.
 SRCS_C   = $(wildcard src/*.c)
