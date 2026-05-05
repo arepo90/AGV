@@ -8,9 +8,16 @@ OBJCOPY  = $(CROSS)objcopy
 SIZE     = $(CROSS)size
 
 MCU      = -mcpu=cortex-m0 -mthumb
-INCLUDES = -Icmsis/device -Icmsis/core -Iinc
 DEFINES  = -DSTM32F051x8
 OPT     ?= -Og
+
+# Each module lives in its own folder under src/. Headers and sources are
+# discovered automatically — drop a new src/foo/foo.{h,c} pair and it builds
+# without further Makefile edits. Shared headers (config.h, types.h) live at
+# src/ root and are reachable via the -Isrc include path.
+MODULE_DIRS = $(wildcard src/*/)
+INCLUDES    = -Icmsis/device -Icmsis/core -Isrc $(addprefix -I,$(MODULE_DIRS))
+
 CFLAGS   = $(MCU) $(INCLUDES) $(DEFINES) -Wall -Wextra $(OPT) -g3 \
            -ffunction-sections -fdata-sections -std=c11
 ASFLAGS  = $(MCU) -g3
@@ -18,8 +25,7 @@ LDSCRIPT = stm32f051x8.ld
 LDFLAGS  = $(MCU) -T$(LDSCRIPT) -Wl,--gc-sections -Wl,-Map=$(BUILD)/$(TARGET).map \
            -nostartfiles --specs=nano.specs --specs=nosys.specs -lm
 
-# Glob every .c under src/ — modules can be added without editing the Makefile.
-SRCS_C   = $(wildcard src/*.c)
+SRCS_C   = $(wildcard src/*.c) $(wildcard src/*/*.c)
 SRCS_S   = startup_stm32f051x8.s
 
 OBJS     = $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.s=$(BUILD)/%.o)
