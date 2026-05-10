@@ -69,17 +69,17 @@ void system_init(void) {
 /* IWDG runs from LSI (~40 kHz). Prescaler /32 → 1.25 kHz tick → 0.8 ms/count.
  * RLR is 12-bit (max 4095). For IWDG_TIMEOUT_MS, reload = ms × 1.25 (rounded). */
 void system_iwdg_init(void) {
-    IWDG->KR = 0x5555u;  /* enable register access */
-    IWDG->PR = 3u;       /* prescaler /32 */
+    IWDG->KR = 0xCCCCu;  /* start watchdog — this also enables the LSI oscillator */
+    IWDG->KR = 0x5555u;  /* unlock PR/RLR for editing */
+    IWDG->PR = 3u;        /* prescaler /32 → ~1.25 kHz LSI tick */
 
     uint32_t reload = (IWDG_TIMEOUT_MS * 1250u) / 1000u;
     if (reload == 0)    reload = 1;
     if (reload > 4095u) reload = 4095u;
     IWDG->RLR = reload;
 
-    while (IWDG->SR) { }     /* wait for PR/RLR update to complete */
-    IWDG->KR = 0xAAAAu;      /* reload counter */
-    IWDG->KR = 0xCCCCu;      /* start watchdog */
+    while (IWDG->SR) { }  /* wait for PR/RLR sync into LSI domain (5 LSI cycles) */
+    IWDG->KR = 0xAAAAu;   /* reload counter with new RLR value */
 }
 
 void system_iwdg_pet(void) {

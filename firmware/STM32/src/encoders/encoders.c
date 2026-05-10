@@ -36,17 +36,12 @@ void encoders_init(void) {
                  | GPIO_MODER_MODER0_1 | GPIO_MODER_MODER1_1;
     GPIOA->AFR[0] = (GPIOA->AFR[0] & ~((0xFu << 0) | (0xFu << 4)))
                   | (2u << 0) | (2u << 4);
-    /* Pull-ups so a disconnected encoder reads HIGH instead of floating. */
-    GPIOA->PUPDR = (GPIOA->PUPDR & ~(GPIO_PUPDR_PUPDR0 | GPIO_PUPDR_PUPDR1))
-                 | GPIO_PUPDR_PUPDR0_0 | GPIO_PUPDR_PUPDR1_0;
 
     /* TIM3 on PA6 (AF1), PA7 (AF1). */
     GPIOA->MODER = (GPIOA->MODER & ~(GPIO_MODER_MODER6 | GPIO_MODER_MODER7))
                  | GPIO_MODER_MODER6_1 | GPIO_MODER_MODER7_1;
     GPIOA->AFR[0] = (GPIOA->AFR[0] & ~((0xFu << 24) | (0xFu << 28)))
                   | (1u << 24) | (1u << 28);
-    GPIOA->PUPDR = (GPIOA->PUPDR & ~(GPIO_PUPDR_PUPDR6 | GPIO_PUPDR_PUPDR7))
-                 | GPIO_PUPDR_PUPDR6_0 | GPIO_PUPDR_PUPDR7_0;
 
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN | RCC_APB1ENR_TIM3EN;
 

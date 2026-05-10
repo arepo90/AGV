@@ -197,6 +197,7 @@ void setup() {
         req->send(200, "text/html", STATUS_HTML);
     });
     s_server.begin();
+    
 
     Serial.println("[boot] ready");
 }

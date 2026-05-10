@@ -158,7 +158,7 @@ static void send_telemetry(uint32_t now_ms) {
 #if !DISABLE_LOG_FORWARDING
 static void drain_logs(void) {
     log_entry_t e;
-    for (uint32_t i = 0; i < 8u && log_pop(&e); i++) {
+    for (uint32_t i = 0; i < 2u && log_pop(&e); i++) {
         uint8_t buf[12];
         buf[0]  = (uint8_t)(e.timestamp_ms);
         buf[1]  = (uint8_t)(e.timestamp_ms >> 8);
@@ -186,8 +186,12 @@ int main(void) {
     encoders_init();
     comms_init();
     adc_init();
+#if !DISABLE_LOAD_CELLS
     hx711_init();
+#endif
+#if !DISABLE_IMU
     imu_init();
+#endif
     caution_init();
     estop_init();
     state_init();
@@ -231,8 +235,12 @@ int main(void) {
 
         /* 4. Sensors (each rate-limits internally) */
         adc_tick(now);
+#if !DISABLE_LOAD_CELLS
         hx711_tick(now);
+#endif
+#if !DISABLE_IMU
         imu_tick(now);
+#endif
 
         /* 4a. QTR calibration sweep (only when active). Tracking happens at
          *     ADC scan rate; cheap when not active. */

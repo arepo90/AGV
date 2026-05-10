@@ -11,12 +11,12 @@
 /* ---- Wi-Fi AP ------------------------------------------------------------- */
 #define AP_SSID                 "AGV-relay"
 #define AP_PASS                 "agvControl"     /* min 8 chars for WPA2 */
-#define AP_CHANNEL              6
+#define AP_CHANNEL              1
 
 /* ---- UART link to STM32 --------------------------------------------------- */
 #define UART_BAUD               921600u
-#define UART_RX_PIN             5            /* connected to STM32 PB6 (TX) */
-#define UART_TX_PIN             4            /* connected to STM32 PB7 (RX) */
+#define UART_RX_PIN             21           /* connected to STM32 PB6 (TX) */
+#define UART_TX_PIN             20           /* connected to STM32 PB7 (RX) */
 #define UART_RX_BUFSIZE         1024u
 
 /* ---- Packet protocol (must match STM32 exactly) -------------------------- */

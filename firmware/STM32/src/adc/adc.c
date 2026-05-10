@@ -48,16 +48,18 @@ static void dma_init(void) {
 static void adc_hw_init(void) {
     RCC->APB2ENR |= RCC_APB2ENR_ADCEN;
 
-    /* CKMODE = PCLK/4 = 12 MHz (within F0 ADC's 14 MHz spec). Must be set
-     * before ADEN according to the reference manual. */
-    ADC1->CFGR2 = ADC_CFGR2_CKMODE_1;     /* 10 = PCLK/4 */
-
-    /* Calibration. ADEN must be 0 during ADCAL=1. */
+    /* Calibration must run in async clock mode (CKMODE=00, HSI14 managed by
+     * hardware). Setting CKMODE before calibration on STM32F051 prevents ADRDY
+     * from ever being set after ADEN. */
     ADC1->CR = ADC_CR_ADCAL;
     while (ADC1->CR & ADC_CR_ADCAL) { }
 
-    /* Enable. */
-    ADC1->CR = ADC_CR_ADEN;
+    /* Now safe to select synchronous clock: CKMODE=10 → PCLK/4 = 12 MHz. */
+    ADC1->CFGR2 = ADC_CFGR2_CKMODE_1;
+
+    /* Clear any stale ADRDY (can be set by a debugger attach), then enable. */
+    ADC1->ISR = ADC_ISR_ADRDY;
+    ADC1->CR  = ADC_CR_ADEN;
     while (!(ADC1->ISR & ADC_ISR_ADRDY)) { }
     ADC1->ISR = ADC_ISR_ADRDY;
 

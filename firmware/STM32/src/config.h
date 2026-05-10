@@ -20,14 +20,14 @@
 #define DISABLE_HEARTBEAT_WATCH     0
 #define DISABLE_ESTOP               0
 #define DISABLE_PROXIMITY           0
-#define DISABLE_LOAD_CELLS          0
-#define DISABLE_IMU                 0
+#define DISABLE_LOAD_CELLS          1
+#define DISABLE_IMU                 1
 #define DISABLE_CURRENT_SENSE       0
 #define DISABLE_ODOMETRY            0
-#define DISABLE_OUTER_LOOP          0       /* navigators feed kinematic split directly when 1 */
+#define DISABLE_OUTER_LOOP          1       /* navigators feed kinematic split directly when 1 */
 #define DISABLE_TELEMETRY           0
 #define DISABLE_LOG_FORWARDING      0       /* log entries still recorded; just not sent over UART */
-#define DISABLE_HEADING_FUSION      0       /* 1 = pure encoder odometry (ignore IMU yaw) */
+#define DISABLE_HEADING_FUSION      1       /* 1 = pure encoder odometry (ignore IMU yaw) */
 
 /* ---- Clocks --------------------------------------------------------------- */
 #define SYSCLK_HZ                   48000000u
@@ -52,7 +52,7 @@
 #define HEARTBEAT_GRACE_MS          3000u   /* further wait before virtual E-STOP fires */
 
 /* ---- Telemetry ------------------------------------------------------------ */
-#define TELEMETRY_RATE_MOVING_HZ    50u
+#define TELEMETRY_RATE_MOVING_HZ    20u
 #define TELEMETRY_RATE_STANDBY_HZ   5u
 
 /* ---- Control loop --------------------------------------------------------- */
@@ -66,8 +66,8 @@
 #define HX711_RATE_MOVING_HZ        2u
 
 /* ---- Mechanical ----------------------------------------------------------- */
-#define WHEEL_RADIUS_M              0.0500f
-#define WHEEL_BASE_M                0.2400f
+#define WHEEL_RADIUS_M              0.1f
+#define WHEEL_BASE_M                0.2f
 #define ENCODER_PPR                 600u    /* OMRON E6B2 quadrature pulses per revolution */
 #define ENCODER_QUADRATURE_FACTOR   4u      /* 4x decoding (TI_TI_RISING_FALLING) */
 #define ENCODER_COUNTS_PER_REV      (ENCODER_PPR * ENCODER_QUADRATURE_FACTOR)
@@ -88,19 +88,19 @@
 
 /* Inner loop: per-wheel velocity PID. Independent gains per side to compensate
  * for mechanical asymmetry (different bearings, motor binding, etc.). */
-#define PID_INNER_KP_LEFT           80.0f
-#define PID_INNER_KI_LEFT           200.0f
+#define PID_INNER_KP_LEFT           1.0f
+#define PID_INNER_KI_LEFT           0.0f
 #define PID_INNER_KD_LEFT           0.0f
-#define PID_INNER_KP_RIGHT          80.0f
-#define PID_INNER_KI_RIGHT          200.0f
+#define PID_INNER_KP_RIGHT          1.0f
+#define PID_INNER_KI_RIGHT          0.0f
 #define PID_INNER_KD_RIGHT          0.0f
 
 /* Outer loop: chassis-level (linear, angular) feedback against odometry. */
 #define PID_OUTER_LIN_KP            1.0f
-#define PID_OUTER_LIN_KI            0.5f
+#define PID_OUTER_LIN_KI            0.0f
 #define PID_OUTER_LIN_KD            0.0f
 #define PID_OUTER_ANG_KP            1.0f
-#define PID_OUTER_ANG_KI            0.5f
+#define PID_OUTER_ANG_KI            0.0f
 #define PID_OUTER_ANG_KD            0.0f
 
 #define PID_OUTPUT_MIN              -1.0f   /* normalised duty; sign = direction */
@@ -109,13 +109,13 @@
 
 /* Navigator-internal control gains (separate from cascade). */
 #define LINE_FOLLOW_CRUISE_MPS      0.3f
-#define LINE_FOLLOW_KP              4.0f
+#define LINE_FOLLOW_KP              1.0f
 #define LINE_FOLLOW_KI              0.0f
-#define LINE_FOLLOW_KD              0.2f
+#define LINE_FOLLOW_KD              0.0f
 
-#define PURE_PURSUIT_LOOKAHEAD_M    0.20f
+#define PURE_PURSUIT_LOOKAHEAD_M    0.50f
 #define TRAJECTORY_CRUISE_MPS       0.3f
-#define TRAJECTORY_HEADING_KP       2.0f    /* point-and-steer angular gain */
+#define TRAJECTORY_HEADING_KP       1.0f    /* point-and-steer angular gain */
 #define TRAJECTORY_SLOWDOWN_RAD     0.5f    /* heading error above this → halve speed */
 
 /* QTR-8A reflectance baselines (used when no flash calibration loaded yet).
@@ -129,7 +129,7 @@
  * encoder more (smooth, drifts); α near 0 → trust IMU more (noisy, no drift).
  * 0.995 with 200 Hz control gives a ~1 second time constant on IMU correction. */
 #define HEADING_FUSION_ALPHA        0.995f
-#define HEADING_FUSION_MIN_CALIB    1u      /* require BNO055 sys-calib ≥ this to fuse */
+#define HEADING_FUSION_MIN_CALIB    2u      /* require BNO055 sys-calib ≥ this to fuse */
 
 /* ---- PWM ------------------------------------------------------------------ */
 #define PWM_FREQ_HZ                 20000u  /* 20 kHz: above audible, fits Pololu G2 spec */

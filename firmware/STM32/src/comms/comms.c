@@ -8,7 +8,7 @@
 /* USART1: PB6=TX (AF0), PB7=RX (AF0). DMA1 Ch2=TX, Ch3=RX. */
 
 /* ---- TX queue: fixed-slot frame ring ------------------------------------- */
-#define TX_SLOTS  4u
+#define TX_SLOTS  16u
 
 typedef struct {
     uint8_t buf[PROTO_MAX_FRAME];

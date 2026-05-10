@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AGV Workstation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+  body { font-family: 'IBM Plex Sans', sans-serif; }
+  input[type=range] { cursor: pointer; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+  button { touch-action: manipulation; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="components/shared.jsx"></script>
+<script type="text/babel" src="components/protocol.jsx"></script>
+<script type="text/babel" src="components/tabs1.jsx"></script>
+<script type="text/babel" src="components/tabs2.jsx"></script>
+<script type="text/babel" src="components/tabs3.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+
+<script type="text/babel">
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "dark",
+  "tabPosition": "bottom",
+  "compactHeader": false
+}/*EDITMODE-END*/;
+
+// ── Themes ──────────────────────────────────────────────────────────────────
+const THEMES = {
+  clinical: {
+    name: 'Clinical White',
+    bg: 'oklch(97% 0.005 240)',
+    cardBg: '#ffffff',
+    fg: 'oklch(18% 0.01 240)',
+    muted: 'oklch(52% 0.01 240)',
+    border: 'oklch(88% 0.008 240)',
+    accent: 'oklch(50% 0.18 250)',
+    danger: 'oklch(50% 0.22 25)',
+    warn: 'oklch(58% 0.18 65)',
+    success: 'oklch(52% 0.16 155)',
+    monoFont: "'IBM Plex Mono', monospace",
+    sansFont: "'IBM Plex Sans', sans-serif",
+    headerBg: '#ffffff',
+    tabBg: '#ffffff',
+    tabActiveBg: 'oklch(97% 0.005 240)',
+  },
+  dark: {
+    name: 'Dark Slate',
+    bg: 'oklch(13% 0.01 240)',
+    cardBg: 'oklch(17% 0.012 240)',
+    fg: 'oklch(88% 0.008 240)',
+    muted: 'oklch(52% 0.01 240)',
+    border: 'oklch(24% 0.015 240)',
+    accent: 'oklch(62% 0.18 250)',
+    danger: 'oklch(62% 0.22 25)',
+    warn: 'oklch(70% 0.18 65)',
+    success: 'oklch(64% 0.16 155)',
+    monoFont: "'IBM Plex Mono', monospace",
+    sansFont: "'IBM Plex Sans', sans-serif",
+    headerBg: 'oklch(17% 0.012 240)',
+    tabBg: 'oklch(17% 0.012 240)',
+    tabActiveBg: 'oklch(13% 0.01 240)',
+  },
+};
+
+// ── Log generator ────────────────────────────────────────────────────────────
+function useLogStream(connected, telem, telemTimeout) {
+  const [logs, setLogs] = React.useState([
+    { ts: '00:00:00', level: 'INFO', msg: 'Workstation initialized.' },
+  ]);
+  const prevEstop = React.useRef(false);
+  const prevFunc = React.useRef(telem.func);
+  const prevMode = React.useRef(telem.mode);
+  const uptimeRef = React.useRef(telem.uptime);
+  uptimeRef.current = telem.uptime;
+
+  function addLog(level, msg) {
+    const ts = fmtUptime(uptimeRef.current);
+    setLogs(l => [...l.slice(-199), { ts, level, msg }]);
+  }
+
+  // Append a parsed PKT_LOG entry from firmware. parseLogEntry() returns
+  // { timestamp_ms, level, code, msg } — accept either that or a pre-shaped
+  // {ts, level, msg} object. Levels map: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR.
+  function pushExternalLog(entry) {
+    const LEVEL = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+    const ts = entry.ts ?? fmtUptime((entry.timestamp_ms ?? 0) / 1000);
+    const level = entry.level && typeof entry.level === 'string'
+      ? entry.level
+      : (LEVEL[entry.level] ?? 'INFO');
+    const msg = entry.msg ?? `code 0x${(entry.code ?? 0).toString(16)}`;
+    setLogs(l => [...l.slice(-199), { ts, level, msg, fromFirmware: true }]);
+  }
+
+  React.useEffect(() => {
+    if (connected && !prevEstop.current) addLog('INFO', 'WebSocket connected to ESP32 bridge.');
+    if (!connected && prevEstop.current !== undefined) addLog('WARN', 'WebSocket disconnected.');
+  }, [connected]);
+
+  React.useEffect(() => {
+    if (telem.estop.active && !prevEstop.current) addLog('ESTOP', 'E-STOP triggered — ' + (telem.estop.sources[0] || 'unknown source'));
+    if (!telem.estop.active && prevEstop.current) addLog('OK', 'E-STOP cleared. System ready.');
+    prevEstop.current = telem.estop.active;
+  }, [telem.estop.active]);
+
+  React.useEffect(() => {
+    if (telem.func !== prevFunc.current) addLog('INFO', `Function → ${telem.func}`);
+    prevFunc.current = telem.func;
+  }, [telem.func]);
+
+  React.useEffect(() => {
+    if (telem.mode !== prevMode.current) addLog('INFO', `Mode → ${telem.mode}`);
+    prevMode.current = telem.mode;
+  }, [telem.mode]);
+
+  React.useEffect(() => {
+    const interval = setInterval(() => {
+      if (connected && Math.random() < 0.04) addLog('DEBUG', `Heartbeat OK — latency ${telem.comms.latency}ms`);
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [connected, telem.comms.latency]);
+
+  const prevTelemTimeout = React.useRef(false);
+  React.useEffect(() => {
+    if (telemTimeout && !prevTelemTimeout.current) addLog('WARN', 'STM32 telemetry timeout — no data for 2 s. Display frozen.');
+    if (!telemTimeout && prevTelemTimeout.current) addLog('INFO', 'STM32 telemetry resumed.');
+    prevTelemTimeout.current = telemTimeout;
+  }, [telemTimeout]);
+
+  return { logs, pushExternalLog };
+}
+
+// ── App Settings Modal ───────────────────────────────────────────────────────
+function SettingsModal({ onClose, theme, wsUrl, setWsUrl }) {
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: theme.cardBg, border: `1px solid ${theme.border}`, borderRadius: '14px', padding: '28px', width: '420px', boxShadow: '0 20px 60px rgba(0,0,0,0.15)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
+          <span style={{ fontSize: '15px', fontFamily: theme.monoFont, fontWeight: 700, color: theme.fg }}>App Settings</span>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', color: theme.muted, fontSize: '22px', cursor: 'pointer', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {[
+            { label: 'AGV WebSocket URL', key: 'wsUrl', type: 'text', placeholder: 'ws://192.168.4.1/ws', note: 'ESP32 AP default — ws://192.168.4.1/ws' },
+          ].map(({ label, note, placeholder }) => (
+            <div key={label}>
+              <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '6px' }}>{label}</div>
+              <input value={wsUrl} onChange={e => setWsUrl(e.target.value)} placeholder={placeholder}
+                style={{ width: '100%', background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: '7px', color: theme.fg, fontFamily: theme.monoFont, fontSize: '13px', padding: '9px 12px' }} />
+              {note && <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>{note}</div>}
+            </div>
+          ))}
+          {/* Read-only config reference from config.h */}
+          <div style={{ background: theme.bg, borderRadius: '8px', padding: '12px 14px' }}>
+            <div style={{ fontSize: '9px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '10px' }}>Firmware Config Reference (config.h)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: '11px', fontFamily: theme.monoFont }}>
+              {[
+                ['Wheel radius', '0.1000 m'],
+                ['Wheel base', '0.2000 m'],
+                ['Encoder PPR', '600 (×4 = 2400 CPR)'],
+                ['Max speed', '1.0 m/s'],
+                ['Max ω', '2.0 rad/s'],
+                ['HB timeout', '1000 ms'],
+                ['HB grace', '3000 ms'],
+                ['Control loop', '200 Hz'],
+                ['Telemetry (moving)', '50 Hz'],
+                ['Telemetry (standby)', '5 Hz'],
+                ['Load caution', '80 kg'],
+                ['Load E-STOP', '100 kg'],
+                ['PWM freq', '20 kHz'],
+                ['UART baud', '921600'],
+              ].map(([k, v]) => (
+                <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', paddingBottom: '4px', borderBottom: `1px solid ${theme.border}` }}>
+                  <span style={{ color: theme.muted }}>{k}</span>
+                  <span style={{ color: theme.accent, fontWeight: 600 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <button onClick={onClose} style={{ marginTop: '20px', width: '100%', padding: '12px', background: theme.accent, border: 'none', borderRadius: '8px', color: '#fff', fontSize: '13px', fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer' }}>Save & Close</button>
+      </div>
+    </div>
+  );
+}
+
+// ── E-STOP Modal ─────────────────────────────────────────────────────────────
+function EstopModal({ telem, onClear, onClose, theme }) {
+  const { estop } = telem;
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: theme.cardBg, border: `2px solid ${theme.danger}`, borderRadius: '14px', padding: '28px', width: '420px', boxShadow: `0 0 40px ${theme.danger}44` }}>
+        <div style={{ fontSize: '18px', fontFamily: theme.monoFont, fontWeight: 700, color: theme.danger, marginBottom: '16px' }}>⛔ E-STOP Active</div>
+        <div style={{ marginBottom: '16px' }}>
+          <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '8px' }}>Active Sources</div>
+          {estop.sources.length === 0
+            ? <div style={{ fontSize: '12px', fontFamily: theme.monoFont, color: theme.muted }}>No sources recorded.</div>
+            : estop.sources.map((s, i) => (
+              <div key={i} style={{ fontSize: '12px', fontFamily: theme.monoFont, color: theme.danger, marginBottom: '4px' }}>• {s}</div>
+            ))}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
+          <div style={{ display: 'flex', gap: '12px', padding: '12px', background: theme.bg, borderRadius: '8px' }}>
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: estop.virtual ? theme.danger : theme.success, marginTop: '2px', flexShrink: 0 }}></div>
+            <div>
+              <div style={{ fontSize: '11px', fontFamily: theme.monoFont, fontWeight: 600, color: theme.fg }}>Virtual E-STOP</div>
+              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.sansFont }}>Software SLEEP pin assertion on motor driver. Workstation-clearable.</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '12px', padding: '12px', background: theme.bg, borderRadius: '8px' }}>
+            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: estop.physical ? theme.danger : theme.success, marginTop: '2px', flexShrink: 0 }}></div>
+            <div>
+              <div style={{ fontSize: '11px', fontFamily: theme.monoFont, fontWeight: 600, color: theme.fg }}>Physical E-STOP</div>
+              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.sansFont }}>Hardware power cut to motor driver. Cannot be cleared by software.</div>
+            </div>
+          </div>
+        </div>
+        {!estop.physical && (
+          <button onClick={() => { onClear(); onClose(); }} style={{ width: '100%', padding: '13px', background: theme.danger, border: 'none', borderRadius: '8px', color: '#fff', fontSize: '13px', fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer' }}>
+            Clear Virtual E-STOP
+          </button>
+        )}
+        {estop.physical && (
+          <div style={{ fontSize: '11px', fontFamily: theme.monoFont, color: theme.muted, textAlign: 'center' }}>Release physical E-STOP button to restore motor power.</div>
+        )}
+        <button onClick={onClose} style={{ width: '100%', marginTop: '10px', padding: '10px', background: 'transparent', border: `1px solid ${theme.border}`, borderRadius: '8px', color: theme.muted, fontSize: '12px', fontFamily: theme.monoFont, cursor: 'pointer' }}>Dismiss</button>
+      </div>
+    </div>
+  );
+}
+
+// ── TABS DEFINITION ──────────────────────────────────────────────────────────
+const TABS = [
+  { id: 'dashboard',    label: 'Dashboard',  icon: '⊞' },
+  { id: 'remote',       label: 'Remote',     icon: '◈' },
+  { id: 'telemetry',    label: 'Telemetry',  icon: '∿' },
+  { id: 'map',          label: 'Map',        icon: '⊕' },
+  { id: 'trajectory',   label: 'Trajectory', icon: '⤢' },
+  { id: 'pid',          label: 'PID Tuning', icon: '⌀' },
+  { id: 'logs',         label: 'Logs',       icon: '≡' },
+  { id: 'unsupervised', label: 'Autonomous', icon: '⊙' },
+  { id: 'comms',        label: 'Comms',      icon: '⌁' },
+];
+
+// ── Proximity sensor widget ───────────────────────────────────────────────────
+// Shows AGV outline (top-down) with 4 corner sensors lit when triggered
+function ProxWidget({ prox, theme }) {
+  const anyTriggered = prox.front || prox.rear || prox.left || prox.right;
+  const S = (active) => ({
+    width: '7px', height: '7px', borderRadius: '50%',
+    background: active ? theme.danger : theme.border,
+    boxShadow: active ? `0 0 5px ${theme.danger}` : 'none',
+    transition: 'all 0.08s',
+    flexShrink: 0,
+  });
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px' }}>
+      <div style={{ fontSize: '9px', fontFamily: theme.monoFont, color: anyTriggered ? theme.danger : theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Prox</div>
+      {/* Top-down AGV layout: 2×2 corner grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '7px 12px 7px', gridTemplateRows: '7px 10px 7px', gap: '2px', alignItems: 'center', justifyItems: 'center' }}>
+        {/* FL */}
+        <div style={S(prox.front || prox.left)}></div>
+        {/* Front center — arrow */}
+        <div style={{ fontSize: '8px', color: prox.front ? theme.danger : theme.muted, textAlign: 'center' }}>▲</div>
+        {/* FR */}
+        <div style={S(prox.front || prox.right)}></div>
+        {/* Left */}
+        <div style={{ fontSize: '8px', color: prox.left ? theme.danger : theme.muted }}>◀</div>
+        {/* AGV body */}
+        <div style={{ width: '10px', height: '10px', border: `1.5px solid ${anyTriggered ? theme.danger : theme.border}`, borderRadius: '2px', transition: 'border-color 0.08s' }}></div>
+        {/* Right */}
+        <div style={{ fontSize: '8px', color: prox.right ? theme.danger : theme.muted }}>▶</div>
+        {/* RL */}
+        <div style={S(prox.rear || prox.left)}></div>
+        {/* Rear */}
+        <div style={{ fontSize: '8px', color: prox.rear ? theme.danger : theme.muted, textAlign: 'center' }}>▼</div>
+        {/* RR */}
+        <div style={S(prox.rear || prox.right)}></div>
+      </div>
+    </div>
+  );
+}
+
+// ── Tab bar (outside App so it doesn't remount on every render) ───────────────
+function TabBar({ activeTab, setActiveTab, theme, tabH }) {
+  return (
+    <div style={{ display: 'flex', background: theme.tabBg, borderTop: `1px solid ${theme.border}`, height: `${tabH}px`, flexShrink: 0, overflowX: 'auto' }}>
+      {TABS.map(tab => {
+        const active = activeTab === tab.id;
+        return (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            style={{
+              flex: '0 0 auto', minWidth: '90px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px',
+              background: active ? theme.tabActiveBg : 'transparent',
+              border: 'none', borderTop: `2px solid ${active ? theme.accent : 'transparent'}`,
+              cursor: 'pointer', padding: '0 10px', transition: 'all 0.12s',
+            }}>
+            <span style={{ fontSize: '16px', color: active ? theme.accent : theme.muted }}>{tab.icon}</span>
+            <span style={{ fontSize: '9px', fontFamily: theme.monoFont, fontWeight: active ? 700 : 400, color: active ? theme.fg : theme.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{tab.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
+  const theme = THEMES[tweaks.theme] || THEMES.clinical;
+
+  const [connected, setConnected] = React.useState(false);
+  const [wsUrl, setWsUrl] = React.useState('ws://192.168.4.1/ws');
+  const [activeTab, setActiveTab] = React.useState('dashboard');
+  const [showEstopModal, setShowEstopModal] = React.useState(false);
+  const [estopDismissed, setEstopDismissed] = React.useState(false);
+  const [showSettings, setShowSettings] = React.useState(false);
+
+  const { telem, telemTimeout, setFunc: setFuncLocal, setMode: setModeLocal, triggerEstop: triggerEstopLocal, clearEstop, setCaution, applyRealTelemetry, updateCommsStats } = useTelemetry(connected);
+  const externalLogRef = React.useRef(null);
+  const { logs, pushExternalLog } = useLogStream(connected, telem, telemTimeout);
+  externalLogRef.current = pushExternalLog;
+
+  // Real WebSocket protocol layer
+  const agv = useAGVWebSocket({
+    url: wsUrl,
+    onConnected: () => setConnected(true),
+    onDisconnected: () => setConnected(false),
+    onTelemetry: (t) => { if (t) applyRealTelemetry(t); },
+    onLog: (entry) => { if (entry && externalLogRef.current) externalLogRef.current(entry); },
+    onNack: (seq, code) => console.warn('[agv] NACK seq', seq, 'code', code),
+    onStats: updateCommsStats,
+  });
+
+  window._setCaution = setCaution;
+
+  // Wrap command functions to send real packets when connected, and update local state
+  async function setFunc(f) {
+    const funcId = AGV_PROTO.FUNC[f] ?? 0;
+    setFuncLocal(f);
+    if (connected) {
+      try { await agv.cmdSetFunction(funcId); }
+      catch(e) { console.warn('[agv] setFunction failed:', e.message); }
+    }
+  }
+  async function setMode(m) {
+    const modeId = AGV_PROTO.MODE[m] ?? 0;
+    setModeLocal(m);
+    if (connected) {
+      try { await agv.cmdSetMode(modeId); }
+      catch(e) { console.warn('[agv] setMode failed:', e.message); }
+    }
+  }
+  async function triggerEstop() {
+    triggerEstopLocal();
+    if (connected) {
+      try { await agv.cmdVirtualEstop(); }
+      catch(e) { console.warn('[agv] estop failed:', e.message); }
+    }
+  }
+  async function clearEstopFull() {
+    clearEstop();
+    if (connected) {
+      try { await agv.cmdClearAllEstop(); }
+      catch(e) { console.warn('[agv] clearEstop failed:', e.message); }
+    }
+  }
+
+  function handleConnect() { agv.connect(); }
+  function handleDisconnect() { agv.disconnect(); }
+
+  const estopActive = telem.estop.active;
+  // Clear dismissed flag when estop is resolved
+  React.useEffect(() => { if (!estopActive) setEstopDismissed(false); }, [estopActive]);
+
+  const headerH = tweaks.compactHeader ? 52 : 64;
+  const tabH = 54;
+
+  function MiniStat({ label, value, color }) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '56px' }}>
+        <div style={{ fontSize: '9px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
+        <div style={{ fontSize: tweaks.compactHeader ? '12px' : '14px', fontFamily: theme.monoFont, fontWeight: 700, color: color || theme.fg }}>{value}</div>
+      </div>
+    );
+  }
+
+  const contentH = `calc(100vh - ${headerH}px - ${tabH}px)`;
+
+  return (
+    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: theme.bg, color: theme.fg, overflow: 'hidden' }}>
+
+      {/* ── HEADER ── */}
+      <div style={{ height: `${headerH}px`, flexShrink: 0, background: theme.headerBg, borderBottom: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', paddingLeft: '16px', paddingRight: '12px', gap: '16px' }}>
+        {/* Logo / title */}
+        <div style={{ display: 'flex', flexDirection: 'column', marginRight: '8px' }}>
+          <span style={{ fontSize: tweaks.compactHeader ? '12px' : '14px', fontFamily: theme.monoFont, fontWeight: 700, color: theme.fg, letterSpacing: '0.08em' }}>AGV</span>
+          <span style={{ fontSize: '8px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.14em', textTransform: 'uppercase' }}>Workstation</span>
+        </div>
+
+        {/* Divider */}
+        <div style={{ width: '1px', height: '30px', background: theme.border }} />
+
+        {/* Connection indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }} onClick={() => setActiveTab('comms')}>
+          <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: connected ? theme.success : theme.muted, boxShadow: connected ? `0 0 6px ${theme.success}` : 'none' }} />
+          <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: connected ? theme.success : theme.muted }}>{connected ? 'LINK' : 'NO LINK'}</span>
+        </div>
+
+        <div style={{ width: '1px', height: '30px', background: theme.border }} />
+
+        {/* Telemetry mini stats */}
+        <div style={{ display: 'flex', gap: '6px', flex: 1, overflowX: 'auto', alignItems: 'center' }}>
+          <MiniStat label="Mode" value={telem.mode === 'SUPERVISED' ? 'SUP' : 'UNSUP'} color={telem.mode === 'SUPERVISED' ? theme.accent : theme.warn} />
+          <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+          <MiniStat label="Func" value={telem.func.replace(/_/g, ' ').replace('FOLLOW', 'FLW')} />
+          <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+          <MiniStat label="Speed" value={fmt(telem.velocity.v, 2, 'm/s')} color={theme.accent} />
+          <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+          <MiniStat label="Load" value={fmt(telem.loadCells.total, 1, 'kg')} />
+          <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+          <MiniStat label="Caution" value={(telem.caution.modifier * 100).toFixed(0) + '%'} color={telem.caution.level === 'NORMAL' ? theme.success : telem.caution.level === 'CAUTION' ? theme.warn : theme.danger} />
+          <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+          <MiniStat label="Uptime" value={fmtUptime(telem.uptime)} />
+          {connected && (
+            <>
+              <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+              <MiniStat label="Ping" value={telem.comms.latency + 'ms'} />
+            </>
+          )}
+          <div style={{ width: '1px', height: '30px', background: theme.border, alignSelf: 'center' }} />
+          <ProxWidget prox={telem.proximity} theme={theme} />
+        </div>
+
+        {/* Right side controls */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+          {/* Connect/disconnect quick button */}
+          {!connected ? (
+            <button onClick={handleConnect}
+              style={{ padding: '7px 14px', background: theme.accent, border: 'none', borderRadius: '7px', color: '#fff', fontSize: '11px', fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer' }}>
+              Connect
+            </button>
+          ) : (
+            <button onClick={handleDisconnect}
+              style={{ padding: '7px 14px', background: 'transparent', border: `1px solid ${theme.border}`, borderRadius: '7px', color: theme.muted, fontSize: '11px', fontFamily: theme.monoFont, cursor: 'pointer' }}>
+              Disconnect
+            </button>
+          )}
+
+          {/* Theme switcher */}
+          <div style={{ display: 'flex', gap: '3px', background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: '8px', padding: '3px' }}>
+            {[['clinical','☀'],['dark','☾']].map(([t, lbl]) => (
+              <button key={t} onClick={() => setTweak('theme', t)}
+                style={{ width: '28px', height: '28px', borderRadius: '5px', border: 'none', fontSize: '13px', cursor: 'pointer', background: tweaks.theme === t ? theme.accent : 'transparent', color: tweaks.theme === t ? '#fff' : theme.muted, transition: 'all 0.12s' }}>
+                {lbl}
+              </button>
+            ))}
+          </div>
+
+          {/* Settings */}
+          <button onClick={() => setShowSettings(true)}
+            style={{ width: '34px', height: '34px', borderRadius: '8px', border: `1px solid ${theme.border}`, background: 'transparent', color: theme.muted, fontSize: '16px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            ⚙
+          </button>
+
+          {/* E-STOP button */}
+          <button
+            onClick={() => {
+              if (estopActive) { setShowEstopModal(true); }
+              else { triggerEstop(); setEstopDismissed(false); setShowEstopModal(true); }
+            }}
+            style={{
+              padding: tweaks.compactHeader ? '7px 14px' : '9px 18px',
+              background: estopActive
+                ? (estopDismissed ? theme.cardBg : theme.danger)
+                : theme.danger,
+              border: `2px solid ${theme.danger}`,
+              borderRadius: '8px',
+              color: estopActive && estopDismissed ? theme.danger : '#fff',
+              fontSize: tweaks.compactHeader ? '11px' : '13px',
+              fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer',
+              animation: estopActive && !estopDismissed ? 'estop-pulse 1s ease-in-out infinite' : 'none',
+              boxShadow: estopActive && !estopDismissed ? `0 0 16px ${theme.danger}88` : 'none',
+              transition: 'all 0.2s',
+            }}>
+            {estopActive
+              ? (estopDismissed ? '⚠ E-STOP (ack)' : '⛔ E-STOP')
+              : '⛔ E-STOP'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── CONTENT ── */}
+      <div style={{ flex: 1, overflow: 'hidden', height: contentH }}>
+        {activeTab === 'dashboard'    && <DashboardTab telem={telem} setFunc={setFunc} setMode={setMode} theme={theme} />}
+        {activeTab === 'remote'       && <RemoteControlTab telem={telem} setFunc={setFunc} theme={theme} agv={agv} connected={connected} />}
+        {activeTab === 'telemetry'    && <TelemetryTab telem={telem} theme={theme} />}
+        {activeTab === 'map'          && <MapTab telem={telem} theme={theme} />}
+        {activeTab === 'trajectory'   && <TrajectoryTab telem={telem} theme={theme} />}
+        {activeTab === 'pid'          && <PIDTab theme={theme} agv={agv} connected={connected} />}
+        {activeTab === 'logs'         && <LogsTab logs={logs} theme={theme} agv={agv} connected={connected} />}
+        {activeTab === 'unsupervised' && <UnsupervisedTab telem={telem} setFunc={setFunc} setMode={setMode} theme={theme} />}
+        {activeTab === 'comms'        && <CommsTab telem={telem} connected={connected} onConnect={handleConnect} onDisconnect={handleDisconnect} wsUrl={wsUrl} setWsUrl={setWsUrl} theme={theme} agv={agv} />}
+      </div>
+
+      {/* ── TAB BAR ── */}
+      <TabBar activeTab={activeTab} setActiveTab={setActiveTab} theme={theme} tabH={tabH} />
+
+      {/* ── MODALS ── */}
+      {showEstopModal && <EstopModal telem={telem} onClear={() => { clearEstopFull(); setEstopDismissed(false); }} onClose={() => { setShowEstopModal(false); setEstopDismissed(true); }} theme={theme} />}
+      {showSettings   && <SettingsModal onClose={() => setShowSettings(false)} theme={theme} wsUrl={wsUrl} setWsUrl={setWsUrl} />}
+
+      {/* ── TWEAKS PANEL ── */}
+      <TweaksPanel>
+        <TweakSection label="Visual Theme" />
+        <TweakRadio label="Theme" value={tweaks.theme}
+          options={['clinical','dark']}
+          onChange={v => setTweak('theme', v)} />
+        <TweakSection label="Layout" />
+        <TweakToggle label="Compact header" value={tweaks.compactHeader}
+          onChange={v => setTweak('compactHeader', v)} />
+      </TweaksPanel>
+
+      <style>{`
+        @keyframes estop-pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.72; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

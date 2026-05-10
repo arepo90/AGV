@@ -37,10 +37,6 @@ void proximity_init(void) {
      * a disconnected sensor reads HIGH (no obstacle). */
     GPIOC->MODER &= ~(GPIO_MODER_MODER6 | GPIO_MODER_MODER7 |
                       GPIO_MODER_MODER8 | GPIO_MODER_MODER9);
-    GPIOC->PUPDR  = (GPIOC->PUPDR & ~(GPIO_PUPDR_PUPDR6 | GPIO_PUPDR_PUPDR7 |
-                                      GPIO_PUPDR_PUPDR8 | GPIO_PUPDR_PUPDR9))
-                  | GPIO_PUPDR_PUPDR6_0 | GPIO_PUPDR_PUPDR7_0
-                  | GPIO_PUPDR_PUPDR8_0 | GPIO_PUPDR_PUPDR9_0;
 
     /* SYSCFG EXTICR: route EXTI lines 6,7 to PC; lines 8,9 to PC.
      * Each EXTICR field is 4 bits; port C = 0b0010. */
