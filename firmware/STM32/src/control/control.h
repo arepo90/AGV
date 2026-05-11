@@ -15,7 +15,7 @@
  *    4. Kinematic split → (v_left_target, v_right_target)
  *    5. Inner per-wheel PID vs encoder velocity → signed duty
  *    6. Apply caution modifier × duty
- *    7. Write to motors (PWM + DIR; SLEEP is owned by estop.c)
+ *    7. Write to motors (PWM + DIR; SLEEP is owned by main.c)
  *
  *  E-STOP behaviour: if estop_active(), all PIDs are reset and PWM is set to
  *  0. This prevents integral windup across the E-STOP window so motion

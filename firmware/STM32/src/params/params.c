@@ -1,8 +1,11 @@
 #include "params.h"
+#include "cargo_monitor.h"
 #include "comms.h"
 #include "control.h"
 #include "hx711.h"
 #include "log.h"
+#include "nav_line.h"
+#include "nav_traj.h"
 #include "types.h"
 #include <string.h>
 
@@ -71,10 +74,20 @@ bool params_apply_one(uint8_t id, float v) {
     case PARAM_OUTER_ANG_KD:   s_outer_ang.kd   = v;
         control_set_outer_ang_gains(s_outer_ang.kp, s_outer_ang.ki, s_outer_ang.kd); break;
 
-    /* Other tunables — these aren't currently wired to runtime-mutable
-     * locations; the modules read from config.h. Logging the receipt makes
-     * it visible without claiming success. Wire them through the relevant
-     * module if/when you need live tuning. */
+    /* Navigator tunables — exposed in the dashboard function panels. */
+    case PARAM_LINE_CRUISE_MPS:        nav_line_set_cruise_mps(v);          break;
+    case PARAM_QTR_LINE_LOST_THRESH:   nav_line_set_lost_threshold(v);      break;
+    case PARAM_TRAJ_CRUISE_MPS:        nav_traj_set_cruise_mps(v);          break;
+    case PARAM_TRAJ_LOOKAHEAD_M:       nav_traj_set_lookahead_m(v);         break;
+
+    /* Cargo thresholds. */
+    case PARAM_WEIGHT_CAUTION_KG:      cargo_monitor_set_caution_kg(v);     break;
+    case PARAM_WEIGHT_ESTOP_KG:        cargo_monitor_set_estop_kg(v);       break;
+    case PARAM_IMBALANCE_CAUTION:      cargo_monitor_set_imbalance_caution(v); break;
+    case PARAM_IMBALANCE_ESTOP:        cargo_monitor_set_imbalance_estop(v);   break;
+
+    /* Recognised but not yet plumbed — modules still read these from config.h.
+     * Wire them through the relevant module if/when you need live tuning. */
     case PARAM_MAX_LINEAR_SPEED:
     case PARAM_MAX_ANGULAR_SPEED:
     case PARAM_MAX_LINEAR_ACCEL:
@@ -84,13 +97,6 @@ bool params_apply_one(uint8_t id, float v) {
     case PARAM_LINE_KP:
     case PARAM_LINE_KI:
     case PARAM_LINE_KD:
-    case PARAM_LINE_CRUISE_MPS:
-    case PARAM_TRAJ_CRUISE_MPS:
-    case PARAM_TRAJ_LOOKAHEAD_M:
-    case PARAM_WEIGHT_CAUTION_KG:
-    case PARAM_WEIGHT_ESTOP_KG:
-    case PARAM_IMBALANCE_CAUTION:
-    case PARAM_IMBALANCE_ESTOP:
         log_record(LOG_MOD_COMMS, LOG_SEV_INFO, LOG_CODE_PARAM_APPLIED, id);
         return false;   /* recognised but not yet plumbed through */
 

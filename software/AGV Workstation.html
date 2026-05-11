@@ -223,25 +223,13 @@ function EstopModal({ telem, onClear, onClose, theme }) {
             <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: estop.virtual ? theme.danger : theme.success, marginTop: '2px', flexShrink: 0 }}></div>
             <div>
               <div style={{ fontSize: '11px', fontFamily: theme.monoFont, fontWeight: 600, color: theme.fg }}>Virtual E-STOP</div>
-              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.sansFont }}>Software SLEEP pin assertion on motor driver. Workstation-clearable.</div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: '12px', padding: '12px', background: theme.bg, borderRadius: '8px' }}>
-            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: estop.physical ? theme.danger : theme.success, marginTop: '2px', flexShrink: 0 }}></div>
-            <div>
-              <div style={{ fontSize: '11px', fontFamily: theme.monoFont, fontWeight: 600, color: theme.fg }}>Physical E-STOP</div>
-              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.sansFont }}>Hardware power cut to motor driver. Cannot be cleared by software.</div>
+              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.sansFont }}>SLEEP pin asserted on motor driver. Workstation-clearable via button below.</div>
             </div>
           </div>
         </div>
-        {!estop.physical && (
-          <button onClick={() => { onClear(); onClose(); }} style={{ width: '100%', padding: '13px', background: theme.danger, border: 'none', borderRadius: '8px', color: '#fff', fontSize: '13px', fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer' }}>
-            Clear Virtual E-STOP
-          </button>
-        )}
-        {estop.physical && (
-          <div style={{ fontSize: '11px', fontFamily: theme.monoFont, color: theme.muted, textAlign: 'center' }}>Release physical E-STOP button to restore motor power.</div>
-        )}
+        <button onClick={() => { onClear(); onClose(); }} style={{ width: '100%', padding: '13px', background: theme.danger, border: 'none', borderRadius: '8px', color: '#fff', fontSize: '13px', fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer' }}>
+          Clear E-STOP
+        </button>
         <button onClick={onClose} style={{ width: '100%', marginTop: '10px', padding: '10px', background: 'transparent', border: `1px solid ${theme.border}`, borderRadius: '8px', color: theme.muted, fontSize: '12px', fontFamily: theme.monoFont, cursor: 'pointer' }}>Dismiss</button>
       </div>
     </div>
@@ -251,7 +239,6 @@ function EstopModal({ telem, onClear, onClose, theme }) {
 // ── TABS DEFINITION ──────────────────────────────────────────────────────────
 const TABS = [
   { id: 'dashboard',    label: 'Dashboard',  icon: '⊞' },
-  { id: 'remote',       label: 'Remote',     icon: '◈' },
   { id: 'telemetry',    label: 'Telemetry',  icon: '∿' },
   { id: 'map',          label: 'Map',        icon: '⊕' },
   { id: 'trajectory',   label: 'Trajectory', icon: '⤢' },
@@ -332,10 +319,9 @@ function App() {
   const [wsUrl, setWsUrl] = React.useState('ws://192.168.4.1/ws');
   const [activeTab, setActiveTab] = React.useState('dashboard');
   const [showEstopModal, setShowEstopModal] = React.useState(false);
-  const [estopDismissed, setEstopDismissed] = React.useState(false);
   const [showSettings, setShowSettings] = React.useState(false);
 
-  const { telem, telemTimeout, setFunc: setFuncLocal, setMode: setModeLocal, triggerEstop: triggerEstopLocal, clearEstop, setCaution, applyRealTelemetry, updateCommsStats } = useTelemetry(connected);
+  const { telem, telemTimeout, setFunc: setFuncLocal, setMode: setModeLocal, triggerEstop: triggerEstopLocal, clearEstop, setCaution: setLocalCaution, applyRealTelemetry, updateCommsStats } = useTelemetry(connected);
   const externalLogRef = React.useRef(null);
   const { logs, pushExternalLog } = useLogStream(connected, telem, telemTimeout);
   externalLogRef.current = pushExternalLog;
@@ -351,6 +337,16 @@ function App() {
     onStats: updateCommsStats,
   });
 
+  // Wrapper to send caution override to firmware
+  async function setCaution(level) {
+    const map = { NORMAL: 1.0, CAUTION: 0.5, CRITICAL: 0.2 };
+    const scalar = map[level] ?? 1.0;
+    setLocalCaution(level);
+    if (connected) {
+      try { await agv.cmdOverrideCaution(scalar); }
+      catch(e) { console.warn('[agv] setCaution failed:', e.message); }
+    }
+  }
   window._setCaution = setCaution;
 
   // Wrap command functions to send real packets when connected, and update local state
@@ -388,9 +384,42 @@ function App() {
   function handleConnect() { agv.connect(); }
   function handleDisconnect() { agv.disconnect(); }
 
+  // ── Remote Control keyboard + streaming (global — active on any tab) ─────
+  const [rcPressed, setRcPressed] = React.useState({ fwd: false, back: false, left: false, right: false });
+  const [rcSpeed, setRcSpeed] = React.useState(0.3);
+  const rcActive = telem.func === 'REMOTE_CONTROL' && !telem.estop.active;
+
+  React.useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target;
+      if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT') return;
+      const map = { ArrowUp: 'fwd', w: 'fwd', ArrowDown: 'back', s: 'back', ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right' };
+      const dir = map[e.key];
+      if (!dir) return;
+      e.preventDefault();
+      setRcPressed(p => ({ ...p, [dir]: e.type === 'keydown' }));
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onKey);
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKey); };
+  }, []);
+
+  const rcVRef = React.useRef(0);
+  const rcOmegaRef = React.useRef(0);
+  React.useEffect(() => {
+    if (!rcActive || !connected || !agv) return;
+    const handle = setInterval(() => {
+      try { agv.cmdVelCmd(rcVRef.current, rcOmegaRef.current); } catch (_) {}
+    }, 50);
+    return () => clearInterval(handle);
+  }, [rcActive, connected, agv]);
+
+  const rcV = (rcPressed.fwd ? rcSpeed : 0) - (rcPressed.back ? rcSpeed : 0);
+  const rcOmega = (rcPressed.right ? rcSpeed * 2 : 0) - (rcPressed.left ? rcSpeed * 2 : 0);
+  rcVRef.current = rcActive ? rcV : 0;
+  rcOmegaRef.current = rcActive ? rcOmega : 0;
+
   const estopActive = telem.estop.active;
-  // Clear dismissed flag when estop is resolved
-  React.useEffect(() => { if (!estopActive) setEstopDismissed(false); }, [estopActive]);
 
   const headerH = tweaks.compactHeader ? 52 : 64;
   const tabH = 54;
@@ -486,34 +515,27 @@ function App() {
           <button
             onClick={() => {
               if (estopActive) { setShowEstopModal(true); }
-              else { triggerEstop(); setEstopDismissed(false); setShowEstopModal(true); }
+              else { triggerEstop(); setShowEstopModal(true); }
             }}
             style={{
               padding: tweaks.compactHeader ? '7px 14px' : '9px 18px',
-              background: estopActive
-                ? (estopDismissed ? theme.cardBg : theme.danger)
-                : theme.danger,
+              background: estopActive ? theme.cardBg : theme.danger,
               border: `2px solid ${theme.danger}`,
               borderRadius: '8px',
-              color: estopActive && estopDismissed ? theme.danger : '#fff',
+              color: estopActive ? theme.danger : '#fff',
               fontSize: tweaks.compactHeader ? '11px' : '13px',
               fontFamily: theme.monoFont, fontWeight: 700, cursor: 'pointer',
-              animation: estopActive && !estopDismissed ? 'estop-pulse 1s ease-in-out infinite' : 'none',
-              boxShadow: estopActive && !estopDismissed ? `0 0 16px ${theme.danger}88` : 'none',
               transition: 'all 0.2s',
             }}>
-            {estopActive
-              ? (estopDismissed ? '⚠ E-STOP (ack)' : '⛔ E-STOP')
-              : '⛔ E-STOP'}
+            {estopActive ? '⚠ E-STOP' : '⛔ E-STOP'}
           </button>
         </div>
       </div>
 
       {/* ── CONTENT ── */}
       <div style={{ flex: 1, overflow: 'hidden', height: contentH }}>
-        {activeTab === 'dashboard'    && <DashboardTab telem={telem} setFunc={setFunc} setMode={setMode} theme={theme} />}
-        {activeTab === 'remote'       && <RemoteControlTab telem={telem} setFunc={setFunc} theme={theme} agv={agv} connected={connected} />}
-        {activeTab === 'telemetry'    && <TelemetryTab telem={telem} theme={theme} />}
+        {activeTab === 'dashboard'    && <DashboardTab telem={telem} setFunc={setFunc} setMode={setMode} theme={theme} agv={agv} connected={connected} rcPressed={rcPressed} setRcPressed={setRcPressed} rcSpeed={rcSpeed} setRcSpeed={setRcSpeed} rcV={rcV} rcOmega={rcOmega} />}
+        {activeTab === 'telemetry'    && <TelemetryTab telem={telem} theme={theme} rcActive={rcActive} rcV={rcV} rcOmega={rcOmega} rcPressed={rcPressed} />}
         {activeTab === 'map'          && <MapTab telem={telem} theme={theme} />}
         {activeTab === 'trajectory'   && <TrajectoryTab telem={telem} theme={theme} />}
         {activeTab === 'pid'          && <PIDTab theme={theme} agv={agv} connected={connected} />}
@@ -526,7 +548,7 @@ function App() {
       <TabBar activeTab={activeTab} setActiveTab={setActiveTab} theme={theme} tabH={tabH} />
 
       {/* ── MODALS ── */}
-      {showEstopModal && <EstopModal telem={telem} onClear={() => { clearEstopFull(); setEstopDismissed(false); }} onClose={() => { setShowEstopModal(false); setEstopDismissed(true); }} theme={theme} />}
+      {showEstopModal && <EstopModal telem={telem} onClear={() => { clearEstopFull(); }} onClose={() => { setShowEstopModal(false); }} theme={theme} />}
       {showSettings   && <SettingsModal onClose={() => setShowSettings(false)} theme={theme} wsUrl={wsUrl} setWsUrl={setWsUrl} />}
 
       {/* ── TWEAKS PANEL ── */}
@@ -542,8 +564,8 @@ function App() {
 
       <style>{`
         @keyframes estop-pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.72; }
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.5; transform: scale(1.05); }
         }
       `}</style>
     </div>

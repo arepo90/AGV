@@ -33,6 +33,7 @@ const AGV_PROTO = {
     LOG_DUMP_REQUEST:       0x0A,
     LOG_CLEAR:              0x0B,
     QTR_CALIBRATE:          0x0C,
+    RESET_ODOMETRY:         0x0D,   /* firmware must zero x/y/θ */
   },
 
   // PARAM_UPDATE IDs
@@ -61,6 +62,7 @@ const AGV_PROTO = {
     LINE_CRUISE_MPS:      0x23,
     TRAJ_CRUISE_MPS:      0x24,
     TRAJ_LOOKAHEAD_M:     0x25,
+    QTR_LINE_LOST_THRESH: 0x26,
     WEIGHT_CAUTION_KG:    0x30,
     WEIGHT_ESTOP_KG:      0x31,
     IMBALANCE_CAUTION:    0x32,
@@ -391,8 +393,12 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
   function cmdLogClear() {
     return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.LOG_CLEAR]);
   }
-  function cmdQtrCalibrate() {
-    return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.QTR_CALIBRATE]);
+  function cmdQtrCalibrate(op = 0) {
+    /* op: 0=begin sweep, 1=save+persist, 2=cancel, 3=reset-to-defaults */
+    return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.QTR_CALIBRATE, op & 0xFF]);
+  }
+  function cmdResetOdometry() {
+    return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.RESET_ODOMETRY]);
   }
   function cmdSoftReset() {
     return sendWithAck(AGV_PROTO.PKT.RESET, [0x01]);
@@ -416,7 +422,7 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
     connect, disconnect,
     cmdSetFunction, cmdSetMode, cmdVelCmd,
     cmdVirtualEstop, cmdOverrideEstop, cmdOverrideCaution,
-    cmdStartTare, cmdLogClear, cmdQtrCalibrate,
+    cmdStartTare, cmdLogClear, cmdQtrCalibrate, cmdResetOdometry,
     cmdSoftReset, cmdClearAllEstop,
     sendParamUpdate, sendParamBatch,
   };
@@ -424,7 +430,7 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
 
 // ── Telemetry parser ─────────────────────────────────────────────────────────
 // Mirrors the byte layout in firmware/STM32/src/main.c → send_telemetry().
-// Total: 111 bytes. All multi-byte values are little-endian.
+// Total: 120 bytes. All multi-byte values are little-endian.
 //
 //  off  size  field
 //  ---  ----  -----------------------------------------------------------
@@ -444,11 +450,13 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
 //   80   4 × f32  hx711_kg[FL,FR,RL,RR]
 //   96   f32  imu_yaw_deg / f32 imu_pitch_deg / f32 imu_roll_deg
 //  108   u8   imu_calib (sys|gyro|accel|mag, 2 bits each)
-//  109   u8   proximity_obstructed (bit0=F, bit1=R, bit2=L, bit3=Rt)
-//  110   u8   flags (bit0=adc, bit1=hx711, bit2=imu, bit3=tare_in_progress)
-//  111   end
+//  109   u16  proximity_obstructed (bit6=F/PC6, bit7=R/PC7, bit8=L/PC8, bit9=Rt/PC9)
+//  111   u8   flags (bit0=adc, bit1=hx711, bit2=imu, bit3=tare_in_progress)
+//  112   f32  motor duty left  [-1,+1]
+//  116   f32  motor duty right [-1,+1]
+//  120   end
 function parseTelemetry(payload) {
-  if (!payload || payload.length < 111) return null;
+  if (!payload || payload.length < 120) return null;
   const buf = new Uint8Array(payload);
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const u8  = (o) => buf[o];
@@ -484,8 +492,8 @@ function parseTelemetry(payload) {
   const cogX = total > 0.001 ? (fr + rr - fl - rl) / total : 0;
   const cogY = total > 0.001 ? (rl + rr - fl - fr) / total : 0;
 
-  const proxBits = u8(109);
-  const flags    = u8(110);
+  const proxBits = u16(109);
+  const flags    = u8(111);
   const calib    = u8(108);
 
   const vLeft  = f32(24);
@@ -507,7 +515,6 @@ function parseTelemetry(payload) {
     estop: {
       active:   estopSrc !== 0,
       virtual:  estopSrc !== 0,
-      physical: false, // physical E-STOP cuts driver power; MCU keeps running but driver is dark
       sources:  estopSourceLabels,
       sourceMask: estopSrc,
     },
@@ -530,14 +537,18 @@ function parseTelemetry(payload) {
       calib_mag:   (calib     ) & 0x3,
     },
     proximity: {
-      front: !!(proxBits & 0x40),  // PC6
-      rear:  !!(proxBits & 0x80),  // PC7
-      left:  false,                // PC8 — truncated by uint8 cast in firmware
-      right: false,                // PC9 — truncated by uint8 cast in firmware
+      front: !!(proxBits & 0x40),   // bit 6 (PC6)
+      rear:  !!(proxBits & 0x80),   // bit 7 (PC7)
+      left:  !!(proxBits & 0x100),  // bit 8 (PC8)
+      right: !!(proxBits & 0x200),  // bit 9 (PC9)
     },
     current: { left: u16(60) / 1000.0, right: u16(62) / 1000.0 },
     qtr: Array.from({ length: 8 }, (_, i) => u16(64 + i * 2)),
     control: { v_target: f32(52), omega_target: f32(56) },
+    motors: {
+      dutyLeft:  f32(112),  // signed [-1,+1]; positive = forward
+      dutyRight: f32(116),
+    },
     flags: {
       adc_data:         !!(flags & 0x01),
       hx711_data:       !!(flags & 0x02),

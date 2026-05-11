@@ -74,11 +74,8 @@ Functions define what the AGV is actively doing. Most are mutually exclusive in 
 
 ## E-STOP System
 
-### Physical E-STOP
-Physical E-STOP buttons cut power directly to the Pololu G2 motor driver (e.g. via a relay or contactor on the 12V motor rail). The MCU remains powered and can detect the loss of driver power, log the event, and manage recovery — but it cannot override a physical E-STOP in software. Physical E-STOP is the ultimate hardware safety guarantee.
-
 ### Virtual E-STOP
-A software flag that commands the MCU to assert the `SLEEP` pins on both motor channels of the Pololu G2, disabling the driver outputs without cutting power to it. Slower to respond than a physical cut but fully controllable and recoverable by firmware or workstation command. Can be triggered by:
+A software flag that commands the MCU to assert the `SLEEP` pins on both motor channels of the Pololu G2, disabling the driver outputs without cutting power to it. Fully controllable and recoverable by firmware or workstation command. Can be triggered by:
 
 | Source | Auto-clears? | Workstation override? |
 |---|---|---|
@@ -88,8 +85,8 @@ A software flag that commands the MCU to assert the `SLEEP` pins on both motor c
 | Workstation command | No — requires explicit clear from workstation | Yes |
 | Firmware fault (overcurrent, watchdog, etc.) | No — requires explicit reset | Yes |
 
-### E-STOP Priority
-Physical E-STOP (power cut to driver) always takes precedence and **cannot be overridden by software or the workstation** — it is a physical safety guarantee. Virtual E-STOP (SLEEP pin assertion) is a software layer that operates independently; both can be active simultaneously. Recovery from a non-auto-clearing virtual E-STOP requires all active non-auto-clearing sources to be resolved (or workstation-overridden) and a reset to be issued.
+### E-STOP and SLEEP pin
+The `SLEEP` pin on each Pololu G2 channel is controlled by `main.c` — it is asserted (LOW, driver Hi-Z) whenever `estop_active()` is true **or** the current function is `FUNC_STANDBY`. This means the motors are fully de-energised whenever the AGV is idle or faulted. During active navigation without an E-STOP, SLEEP is HIGH and braking is handled by PWM; SLEEP is reserved for true idle/fault states. Recovery from a non-auto-clearing E-STOP requires all active non-auto-clearing sources to be resolved (or workstation-overridden) and a reset to be issued.
 
 ---
 
@@ -174,13 +171,15 @@ Multiple sources can independently set a caution level. The system always uses t
 | Mode | `UNSUPERVISED` + navigation function active | `CAUTION` (baseline) |
 | Proximity | Sensor triggered but not yet E-STOP (future: range-based) | `CAUTION` |
 
-### REMOTE_CONTROL behavior
-The caution modifier is **active during `REMOTE_CONTROL`** — operator commands are still capped by `effective_max_speed`. The workstation can explicitly override it (set `caution_modifier = 1.0` from a super-user command), taking full responsibility. The override clears automatically when the triggering condition resolves.
+### Workstation override behavior
+The workstation can explicitly override the caution modifier via `PKT_CMD` sub-type `0x06 OVERRIDE_CAUTION`. When the GUI sends an override, it has **full authority** — the firmware returns `s_ws_override` directly, bypassing the firmware-source minimum. This allows the operator to both apply additional caution beyond firmware constraints (send 0.2 when firmware computes 1.0) and to relax constraints the firmware has imposed (send 1.0 when firmware computes 0.5). The workstation has the final say.
 
 ### Implementation notes
-- Store the modifier as a single `float` computed each control cycle by iterating over all source states and taking the minimum.
+- Per-source levels are stored in a `float s_level[8]` array; `caution_modifier()` returns the minimum across all active sources.
+- When `s_ws_override_active` is true, `caution_modifier()` returns `s_ws_override` directly, ignoring the firmware minimum.
+- The workstation override bit (`CAUTION_SRC_WORKSTATION_FORCED`) appears in `caution_active_sources()` when the override is active and below NORMAL.
 - All speed/PWM setpoint calculations read through this modifier before writing to hardware.
-- The modifier value and active source bitmask should be included in telemetry sent to the workstation.
+- The modifier value and active source bitmask are included in every telemetry frame.
 - Thresholds (imbalance limits, weight limits, etc.) belong in `config.h`.
 
 ---
@@ -223,6 +222,25 @@ The relay parses each `PKT_TELEMETRY` frame as it crosses from STM32 to the work
 `INIT` is intentionally silent so a powered-on AGV with no workstation connected does not buzz — `DISCONNECT` only kicks in once telemetry has been seen and then lost, which is genuinely abnormal.
 
 State transitions are instantaneous; the breathing/pulsing animations are computed from `system_now_ms()` so they remain phase-coherent across rapid state changes.
+
+## Status LED (Onboard ESP32)
+
+An onboard LED on the ESP32-C3 provides real-time status feedback independent of the stack light. The LED pattern encodes the current system state and navigation function.
+
+### Pattern (non-ESTOP states)
+1. **Mode flash:** 100ms (SUPERVISED) or 400ms (UNSUPERVISED)
+2. **Pause:** 200ms
+3. **Function flashes:** N × 100ms where N = current function ID
+   - `STANDBY` (0) → no flashes
+   - `REMOTE_CONTROL` (1) → 1 flash
+   - `LINE_FOLLOW` (2) → 2 flashes
+   - `TRAJECTORY_FOLLOW` (3) → 3 flashes
+4. **Final pause:** to complete ~1.2s cycle
+
+### Pattern (ESTOP active)
+Continuous fast flashing: 100ms on, 100ms off (200ms period)
+
+The LED updates every telemetry packet received, giving the operator instant visibility into mode, function, and E-STOP state without looking at the GUI.
 
 ---
 
@@ -280,10 +298,17 @@ The workstation should persist scale values on its side and re-send them on conn
 
 A sensor whose min/max range is below 200 ADC counts is flagged in `LOG_CODE_QTR_CAL_INSUFFICIENT_RANGE` and retains its previous baseline rather than getting a useless calibration.
 
+The Telemetry tab in the workstation GUI renders the 8 raw QTR ADC readings as a horizontal heat strip (thermal palette, low = light surface, high = dark/line) with a "line position" marker computed from the per-frame in-frame-normalised weighted centroid of sensor indices. The GUI does not have access to the firmware's white/black baselines, so its CoM tracks the contrast within the current frame rather than the calibrated line position — useful for visual confirmation of sensor health and sweep coverage during calibration, but the authoritative line position remains what the firmware reports.
+
 **Live PID tuning:**
 - Inner per-wheel: `PARAM_INNER_K{P,I,D}_{LEFT,RIGHT}` (`0x10`-`0x15`)
 - Outer chassis: `PARAM_OUTER_{LIN,ANG}_K{P,I,D}` (`0x16`-`0x1B`)
 - Send `PKT_PARAM_UPDATE` with one or more `[id, f32 value]` tuples — applied immediately. RAM-only; resend on connect.
+
+**Live navigator tuning (exposed in the dashboard function panels):**
+- `PARAM_LINE_CRUISE_MPS` (`0x23`), `PARAM_QTR_LINE_LOST_THRESH` (`0x26`) — LINE_FOLLOW
+- `PARAM_TRAJ_CRUISE_MPS` (`0x24`), `PARAM_TRAJ_LOOKAHEAD_M` (`0x25`) — TRAJECTORY_FOLLOW
+- `PARAM_WEIGHT_CAUTION_KG` (`0x30`), `PARAM_WEIGHT_ESTOP_KG` (`0x31`) — STANDBY cargo limits
 
 ### What still requires a firmware rebuild
 
@@ -300,13 +325,13 @@ If a tunable shows up in `config.h` but is not in the param-ID table, it can be 
 
 The workstation is a **super-user**. It can:
 - Override any virtual E-STOP source (including proximity sensor auto-cleared ones, cargo faults, etc.)
-- Override the caution modifier (force full speed temporarily)
+- Override the caution modifier — when the GUI sends an explicit caution override, it can be more permissive than firmware sources (relaxing speed constraints) or more restrictive (adding extra caution)
 - Force any mode or function transition, including ones the firmware would not perform autonomously
 - Request an on-demand read of any sensor at any time, regardless of current function or polling schedule
 - Update any runtime parameter live (see `PARAM_UPDATE` packet)
 - Trigger a firmware soft-reset
 
-The only thing the workstation **cannot** override is a physical E-STOP (button cutting power to the motor driver), since that is a physical circuit break.
+**Caution override semantics:** When the GUI sends an explicit caution level via `PKT_CMD 0x06`, the firmware uses that value directly — it takes precedence over all firmware-derived caution sources in both directions (more permissive or more restrictive). See the Caution Modifier section for details.
 
 ---
 
@@ -376,6 +401,41 @@ The ESP32 is a transparent relay with minimal processing:
 - Receives UART frames from the STM32 and forwards them to the workstation over Wi-Fi.
 - Handles the CRC check on UART frames (discards corrupt frames, sends NACK).
 - Manages the Wi-Fi AP and client connection state.
+- **Status LED:** Feeds telemetry data to an onboard LED for real-time mode/function/E-STOP indication.
+
+### Telemetry packet format (PKT_TELEMETRY)
+The telemetry payload structure is fixed by the firmware's `send_telemetry()` function and must be kept in sync between firmware and software. Recent changes:
+
+| Offset | Field | Type | Notes |
+|---|---|---|---|
+| 0–3 | `timestamp_ms` | `u32` | Milliseconds since boot |
+| 4 | `mode` | `u8` | 0 = SUPERVISED, 1 = UNSUPERVISED |
+| 5 | `function` | `u8` | 0 = STANDBY, 1 = REMOTE_CONTROL, 2 = LINE_FOLLOW, 3 = TRAJECTORY_FOLLOW |
+| 6 | `estop_sources` | `u8` | Bitmask of active E-STOP sources |
+| 7 | `caution_sources` | `u8` | Bitmask of active caution sources |
+| 8–11 | `caution_modifier` | `f32` | Current speed scalar [0.0, 1.0] |
+| 12–13 | `log_pending` | `u16` | Pending log entries |
+| 14–15 | `log_dropped` | `u16` | Dropped log entries (overflowed) |
+| 16–19 | `encoder_left_counts` | `u32` | Cumulative left encoder ticks |
+| 20–23 | `encoder_right_counts` | `u32` | Cumulative right encoder ticks |
+| 24–27 | `velocity_left` | `f32` | Left wheel velocity (m/s) |
+| 28–31 | `velocity_right` | `f32` | Right wheel velocity (m/s) |
+| 32–43 | Odometry | 3 × `f32` | x, y, theta |
+| 44–47 | `velocity_linear` | `f32` | Chassis linear velocity (m/s) |
+| 48–51 | `velocity_angular` | `f32` | Chassis angular velocity (rad/s) |
+| 52–55 | `control_v_target` | `f32` | Setpoint from navigator |
+| 56–59 | `control_omega_target` | `f32` | Setpoint from navigator |
+| 60–61 | `current_left_ma` | `u16` | Left motor current (mA) |
+| 62–63 | `current_right_ma` | `u16` | Right motor current (mA) |
+| 64–79 | `qtr_raw` | 8 × `u16` | QTR-8A raw ADC counts |
+| 80–95 | `load_cells` | 4 × `f32` | Front-left, front-right, rear-left, rear-right (kg) |
+| 96–107 | IMU | 3 × `f32` | yaw, pitch, roll (degrees) |
+| 108 | `imu_calib` | `u8` | Calibration status (2 bits each: sys, gyro, accel, mag) |
+| 109–110 | `proximity_obstructed` | `u16` | Bits 6–9 = PC6–PC9 (Front/Rear/Left/Right) sensors |
+| 111 | `flags` | `u8` | bit 0: ADC valid, bit 1: HX711 valid, bit 2: IMU valid, bit 3: tare in progress |
+| 112–115 | `duty_left` | `f32` | Left motor PWM duty [-1.0, +1.0]; sign = direction |
+| 116–119 | `duty_right` | `f32` | Right motor PWM duty [-1.0, +1.0]; sign = direction |
+| Total | — | — | **120 bytes** |
 
 ---
 
@@ -435,14 +495,15 @@ All peripherals are connected to the STM32 and operate on **3.3V logic**.
 | PC5 | QTR Sensor 8 (ADC_IN15) |
 
 ### 5. E18-D80NK Proximity Sensors (EXTI interrupts)
-| Pin | Function | Facing |
-|---|---|---|
-| PC6 | Proximity Sensor 1 (EXTI6) | Front |
-| PC7 | Proximity Sensor 2 (EXTI7) | Rear |
-| PC8 | Proximity Sensor 3 (EXTI8) | Left |
-| PC9 | Proximity Sensor 4 (EXTI9) | Right |
+| Pin | Function | Facing | Telemetry bit |
+|---|---|---|---|
+| PC6 | Proximity Sensor 1 (EXTI6) | Front | bit 6 (0x40) |
+| PC7 | Proximity Sensor 2 (EXTI7) | Rear | bit 7 (0x80) |
+| PC8 | Proximity Sensor 3 (EXTI8) | Left | bit 8 (0x100) |
+| PC9 | Proximity Sensor 4 (EXTI9) | Right | bit 9 (0x200) |
 
 > Facing assignments are logical labels defined in `config.h` and may change to match physical mounting.
+> Telemetry: `proximity_obstructed` is now transmitted as `uint16_t` (2 bytes) at offset 109 in the telemetry payload to capture all 4 sensor bits without truncation.
 
 ### 6. BNO055 IMU (I2C1)
 | Pin | Function |

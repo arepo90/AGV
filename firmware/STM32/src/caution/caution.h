@@ -28,5 +28,6 @@ void     caution_set(caution_source_t src, float level);   /* level in [0..1] */
 void     caution_clear(caution_source_t src);              /* equivalent to set(src, 1.0) */
 float    caution_modifier(void);                           /* current effective scalar */
 uint8_t  caution_active_sources(void);                     /* bitmask of non-1.0 sources */
+void     caution_set_workstation_override(float level);    /* GUI explicitly sets override (can be higher than firmware min) */
 
 #endif /* CAUTION_H */

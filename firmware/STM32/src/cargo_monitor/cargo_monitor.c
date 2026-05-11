@@ -11,7 +11,18 @@
  * just reading noise. Imbalance fraction would be huge but meaningless. */
 #define IMBALANCE_FLOOR_KG    2.0f
 
+/* Runtime-mutable thresholds. Defaults from config.h; PARAM_UPDATE may override. */
+static float s_caution_kg       = WEIGHT_TOTAL_CAUTION_KG;
+static float s_estop_kg         = WEIGHT_TOTAL_ESTOP_KG;
+static float s_imbalance_caution = WEIGHT_IMBALANCE_CAUTION;
+static float s_imbalance_estop   = WEIGHT_IMBALANCE_ESTOP;
+
 void cargo_monitor_init(void) {}
+
+void cargo_monitor_set_caution_kg(float kg)        { if (kg > 0.0f && kg < 1000.0f) s_caution_kg = kg; }
+void cargo_monitor_set_estop_kg(float kg)          { if (kg > 0.0f && kg < 1000.0f) s_estop_kg = kg; }
+void cargo_monitor_set_imbalance_caution(float f)  { if (f > 0.0f && f < 1.0f) s_imbalance_caution = f; }
+void cargo_monitor_set_imbalance_estop(float f)    { if (f > 0.0f && f < 1.0f) s_imbalance_estop = f; }
 
 void cargo_monitor_tick(void) {
 #if DISABLE_LOAD_CELLS
@@ -27,10 +38,10 @@ void cargo_monitor_tick(void) {
     }
 
     /* ---- Total-weight thresholds ---------------------------------------- */
-    if (total >= WEIGHT_TOTAL_ESTOP_KG) {
+    if (total >= s_estop_kg) {
         estop_assert(ESTOP_SRC_CARGO_OVERLOAD);
         caution_set(CAUTION_SRC_LOAD_OVERWEIGHT, CAUTION_LEVEL_CRITICAL);
-    } else if (total >= WEIGHT_TOTAL_CAUTION_KG) {
+    } else if (total >= s_caution_kg) {
         estop_clear_autoclearing(ESTOP_SRC_CARGO_OVERLOAD);
         caution_set(CAUTION_SRC_LOAD_OVERWEIGHT, CAUTION_LEVEL_CAUTION);
     } else {
@@ -55,10 +66,10 @@ void cargo_monitor_tick(void) {
      * relatively less serious than the same 25 kg on a 30 kg load. */
     float frac = max_dev / mean;
 
-    if (frac >= WEIGHT_IMBALANCE_ESTOP) {
+    if (frac >= s_imbalance_estop) {
         estop_assert(ESTOP_SRC_CARGO_IMBALANCE);
         caution_set(CAUTION_SRC_LOAD_IMBALANCE, CAUTION_LEVEL_CRITICAL);
-    } else if (frac >= WEIGHT_IMBALANCE_CAUTION) {
+    } else if (frac >= s_imbalance_caution) {
         estop_clear_autoclearing(ESTOP_SRC_CARGO_IMBALANCE);
         caution_set(CAUTION_SRC_LOAD_IMBALANCE, CAUTION_LEVEL_CAUTION);
     } else {

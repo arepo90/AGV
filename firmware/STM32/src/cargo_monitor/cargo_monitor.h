@@ -25,4 +25,10 @@
 void cargo_monitor_init(void);
 void cargo_monitor_tick(void);
 
+/* Live-tunable thresholds (PARAM_UPDATE entry points). Defaults from config.h. */
+void cargo_monitor_set_caution_kg(float kg);
+void cargo_monitor_set_estop_kg(float kg);
+void cargo_monitor_set_imbalance_caution(float frac);
+void cargo_monitor_set_imbalance_estop(float frac);
+
 #endif /* CARGO_MONITOR_H */

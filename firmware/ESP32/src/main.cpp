@@ -22,6 +22,7 @@
 #include "config.h"
 #include "frame.h"
 #include "stacklight.h"
+#include "status_led.h"
 
 static AsyncWebServer  s_server(80);
 static AsyncWebSocket  s_ws(WS_PATH);
@@ -53,9 +54,17 @@ static void tap_telemetry(const uint8_t *frame, size_t total_len) {
     if (type != 0x03 /* PKT_TELEMETRY */) return;
     if (len < 8) return;            /* too short for the fields we want */
 
+    uint8_t mode            = frame[6 + 4];
+    uint8_t function        = frame[6 + 5];
     uint8_t estop_sources   = frame[6 + 6];
     uint8_t caution_sources = frame[6 + 7];
+
     stacklight_update_from_telemetry(estop_sources, caution_sources, millis());
+
+    /* Update status LED: ESTOP active if any bit set, mode is 0=SUPERVISED/1=UNSUPERVISED */
+    status_led_update_estop(estop_sources != 0);
+    status_led_update_mode(mode == 0);  /* true = supervised, false = unsupervised */
+    status_led_update_function(function); /* 0=STANDBY, 1=REMOTE, 2=LINE, 3=TRAJ */
 }
 
 static void uart_on_complete(const uint8_t *frame, size_t total_len) {
@@ -177,6 +186,9 @@ void setup() {
      * of bring-up runs (red breathing during INIT). */
     stacklight_init();
 
+    /* Status LED (onboard LED for system status indication) */
+    status_led_init(STATUS_LED_PIN, STATUS_LED_ACTIVE_LOW);
+
     /* UART to STM32 */
     s_stm32.setRxBufferSize(UART_RX_BUFSIZE);
     s_stm32.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
@@ -205,6 +217,8 @@ void setup() {
 void loop() {
     uart_drain();
     s_ws.cleanupClients();
-    stacklight_tick(millis());
+    uint32_t now = millis();
+    stacklight_tick(now);
+    status_led_tick(now);
     /* No delay() — UART throughput at 921600 demands prompt draining. */
 }

@@ -83,6 +83,7 @@
 #define PARAM_LINE_CRUISE_MPS           0x23u
 #define PARAM_TRAJ_CRUISE_MPS           0x24u
 #define PARAM_TRAJ_LOOKAHEAD_M          0x25u
+#define PARAM_QTR_LINE_LOST_THRESH      0x26u
 #define PARAM_WEIGHT_CAUTION_KG         0x30u
 #define PARAM_WEIGHT_ESTOP_KG           0x31u
 #define PARAM_IMBALANCE_CAUTION         0x32u

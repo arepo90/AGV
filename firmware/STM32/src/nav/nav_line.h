@@ -57,4 +57,8 @@ bool nav_line_cal_active(void);
  * calibration record was found and applied. */
 bool nav_line_load_calibration_from_flash(void);
 
+/* Live-tunable parameters (PARAM_UPDATE entry points). */
+void nav_line_set_cruise_mps(float v);
+void nav_line_set_lost_threshold(float t);
+
 #endif /* NAV_LINE_H */

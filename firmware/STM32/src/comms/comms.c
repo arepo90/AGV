@@ -129,7 +129,8 @@ static bool tx_enqueue(const uint8_t *frame, uint8_t total_len) {
     uint8_t next = (s_tx_head + 1u) % TX_SLOTS;
     if (next == s_tx_tail) {
         if (!primask) __enable_irq();
-        log_record(LOG_MOD_COMMS, LOG_SEV_WARN, LOG_CODE_TX_QUEUE_FULL, total_len);
+        /* Drop count is surfaced via log_dropped_count() in telemetry; no log_record
+         * here to avoid a cascade where the log entry tries to re-enter tx_enqueue. */
         return false;
     }
 

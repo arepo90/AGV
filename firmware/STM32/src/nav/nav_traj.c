@@ -16,6 +16,12 @@ static uint8_t    s_count = 0;
 static uint8_t    s_active = 0;
 static bool       s_completed = false;
 
+/* Runtime-mutable tunables. Lookahead is stored even though the current
+ * point-and-steer implementation doesn't consume it — a pure-pursuit upgrade
+ * will. Set via PARAM_UPDATE. */
+static float      s_cruise_mps  = TRAJECTORY_CRUISE_MPS;
+static float      s_lookahead_m = PURE_PURSUIT_LOOKAHEAD_M;
+
 void nav_traj_init(void) {
     s_count = 0;
     s_active = 0;
@@ -94,7 +100,7 @@ void nav_traj_get(float dt_s, float *v_target, float *omega_target) {
     if (omega >  MAX_ANGULAR_SPEED_RADPS) omega =  MAX_ANGULAR_SPEED_RADPS;
     if (omega < -MAX_ANGULAR_SPEED_RADPS) omega = -MAX_ANGULAR_SPEED_RADPS;
 
-    float v = TRAJECTORY_CRUISE_MPS;
+    float v = s_cruise_mps;
     if (err > TRAJECTORY_SLOWDOWN_RAD || err < -TRAJECTORY_SLOWDOWN_RAD) {
         v *= 0.5f;
     }
@@ -102,3 +108,6 @@ void nav_traj_get(float dt_s, float *v_target, float *omega_target) {
     *v_target = v;
     *omega_target = omega;
 }
+
+void nav_traj_set_cruise_mps(float v)  { if (v >= 0.0f && v <= 5.0f) s_cruise_mps = v; }
+void nav_traj_set_lookahead_m(float m) { if (m > 0.0f && m <= 5.0f)  s_lookahead_m = m; }

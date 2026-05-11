@@ -77,7 +77,7 @@ static void handle_override_caution(const packet_t *pkt) {
     if (pkt->len < 1u + sizeof(float)) { comms_send_nack(pkt->seq, NACK_BAD_LENGTH); return; }
     float scalar;
     memcpy(&scalar, &pkt->payload[1], sizeof scalar);
-    caution_set(CAUTION_SRC_WORKSTATION_FORCED, scalar);
+    caution_set_workstation_override(scalar);
     comms_send_ack(pkt->seq, 0);
 }
 

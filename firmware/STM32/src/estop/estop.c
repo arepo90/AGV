@@ -1,7 +1,6 @@
 #include "estop.h"
 #include "config.h"
 #include "log.h"
-#include "motors.h"
 #include "stm32f0xx.h"
 
 static volatile uint8_t s_sources = 0;
@@ -69,10 +68,3 @@ uint8_t estop_sources(void) {
     return s_sources;
 }
 
-bool estop_apply(void) {
-    bool enable = (s_sources == 0);
-    if (motors_enabled() != enable) {
-        motors_set_enabled(enable);
-    }
-    return enable;
-}

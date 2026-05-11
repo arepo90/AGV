@@ -135,14 +135,18 @@ static void send_telemetry(uint32_t now_ms) {
                                imu_calib_mag());
     PUT_U8(calib);
 
-    PUT_U8(proximity_obstructed());
+    PUT_U16(proximity_obstructed());   /* u16: bits 6-9 = PC6-PC9 sensors */
 
     uint8_t flags = 0;
     if (adc_has_data())             flags |= 0x01;
     if (hx711_has_data())           flags |= 0x02;
     if (imu_has_data())             flags |= 0x04;
     if (hx711_tare_in_progress())   flags |= 0x08;
-    PUT_U8(flags);
+    PUT_U8(flags);                                   /* offset 111 */
+
+    /* Motor output: signed duty [-1,+1] and direction derived from sign. */
+    PUT_F32(control_duty_left());                    /* offset 112 */
+    PUT_F32(control_duty_right());                   /* offset 116 */
 
     #undef PUT_U32
     #undef PUT_U16
@@ -182,7 +186,7 @@ static void drain_logs(void) {
 int main(void) {
     system_init();
     log_init();
-    motors_init();           /* SLEEP LOW: motors safe before anything else */
+    motors_init();           /* SLEEP LOW at init: motors stay safe until first run */
     encoders_init();
     comms_init();
     adc_init();
@@ -251,10 +255,14 @@ int main(void) {
         current_monitor_tick();
         cargo_monitor_tick();
 
-        /* 6. Apply E-STOP arbitration to motor SLEEP pins. Runs BEFORE control
-         *    so SLEEP is correct when control writes new PWM values. */
+        /* 6. Apply SLEEP pin. Sleep (Lo) when E-STOP is active OR in STANDBY
+         *    (PWM braking handles deceleration; SLEEP for true idle/fault state).
+         *    Runs BEFORE control so SLEEP is correct when control writes PWM. */
 #if !DISABLE_ESTOP
-        estop_apply();
+        {
+            bool should_run = !estop_active() && (state_function() != FUNC_STANDBY);
+            if (motors_enabled() != should_run) motors_set_enabled(should_run);
+        }
 #endif
 
         /* 7. Cascade control loop at CONTROL_LOOP_HZ. */

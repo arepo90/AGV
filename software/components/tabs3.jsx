@@ -53,12 +53,12 @@ function GainRow({ gainKey, label, min, max, step, value, onChange, theme }) {
 function PIDTab({ theme, agv, connected }) {
   // Real defaults from config.h
   const [gains, setGains] = React.useState({
-    outer_lin_kp:   1.0,  outer_lin_ki:   0.5,  outer_lin_kd:   0.0,
-    outer_ang_kp:   1.0,  outer_ang_ki:   0.5,  outer_ang_kd:   0.0,
-    inner_left_kp:  80.0, inner_left_ki:  200.0, inner_left_kd:  0.0,
-    inner_right_kp: 80.0, inner_right_ki: 200.0, inner_right_kd: 0.0,
-    line_kp:        4.0,  line_ki:        0.0,  line_kd:        0.2,
-    line_cruise:    0.3,  traj_cruise:    0.3,  traj_lookahead: 0.20,
+    outer_lin_kp:   1.0,  outer_lin_ki:   0.0,  outer_lin_kd:   0.0,
+    outer_ang_kp:   1.0,  outer_ang_ki:   0.0,  outer_ang_kd:   0.0,
+    inner_left_kp:  1.0,  inner_left_ki:  0.0,  inner_left_kd:  0.0,
+    inner_right_kp: 1.0,  inner_right_ki: 0.0,  inner_right_kd: 0.0,
+    line_kp:        1.0,  line_ki:        0.0,  line_kd:        0.0,
+    line_cruise:    0.3,  traj_cruise:    0.3,  traj_lookahead: 0.50,
   });
   const [sent, setSent] = React.useState(null);
 
@@ -111,12 +111,12 @@ function PIDTab({ theme, agv, connected }) {
   return (
     <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px', height: '100%', boxSizing: 'border-box', overflowY: 'auto' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
-        <Section title="Outer Loop — Linear (PI)" paramNote="PARAM_OUTER_LIN_K* (0x16–0x18)" keys={[
+        <Section title="Outer Loop — Linear (PI) [DISABLED]" paramNote="PARAM_OUTER_LIN_K* (0x16–0x18) · DISABLE_OUTER_LOOP=1 in firmware" keys={[
           ['outer_lin_kp', 'Kp', 0, 10, 0.01],
           ['outer_lin_ki', 'Ki', 0, 5,  0.01],
           ['outer_lin_kd', 'Kd', 0, 2,  0.001],
         ]} />
-        <Section title="Outer Loop — Angular (PI)" paramNote="PARAM_OUTER_ANG_K* (0x19–0x1B)" keys={[
+        <Section title="Outer Loop — Angular (PI) [DISABLED]" paramNote="PARAM_OUTER_ANG_K* (0x19–0x1B) · DISABLE_OUTER_LOOP=1 in firmware" keys={[
           ['outer_ang_kp', 'Kp', 0, 10, 0.01],
           ['outer_ang_ki', 'Ki', 0, 5,  0.01],
           ['outer_ang_kd', 'Kd', 0, 2,  0.001],
@@ -128,14 +128,14 @@ function PIDTab({ theme, agv, connected }) {
           ['line_cruise', 'Cruise (m/s)', 0, 1.0, 0.01],
         ]} />
         <Section title="Inner Loop — Left Wheel (PID)" paramNote="PARAM_INNER_K*_LEFT (0x10–0x12)" keys={[
-          ['inner_left_kp', 'Kp', 0, 500, 1],
-          ['inner_left_ki', 'Ki', 0, 500, 1],
-          ['inner_left_kd', 'Kd', 0, 10,  0.001],
+          ['inner_left_kp', 'Kp', 0, 10, 0.01],
+          ['inner_left_ki', 'Ki', 0, 5,  0.01],
+          ['inner_left_kd', 'Kd', 0, 2,  0.001],
         ]} />
         <Section title="Inner Loop — Right Wheel (PID)" paramNote="PARAM_INNER_K*_RIGHT (0x13–0x15)" keys={[
-          ['inner_right_kp', 'Kp', 0, 500, 1],
-          ['inner_right_ki', 'Ki', 0, 500, 1],
-          ['inner_right_kd', 'Kd', 0, 10,  0.001],
+          ['inner_right_kp', 'Kp', 0, 10, 0.01],
+          ['inner_right_ki', 'Ki', 0, 5,  0.01],
+          ['inner_right_kd', 'Kd', 0, 2,  0.001],
         ]} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', justifyContent: 'flex-end' }}>
           <Section title="Trajectory Navigator" paramNote="PARAM_TRAJ_* (0x24–0x25)" keys={[
@@ -156,7 +156,7 @@ function PIDTab({ theme, agv, connected }) {
           <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, lineHeight: 1.6 }}>
             All gains packed into a single <code>PKT_PARAM_UPDATE</code> frame.<br />
             Applied on the next 200 Hz control tick.<br />
-            Inner loop gains are large by design (80/200 default).
+            Outer loop sections are currently inactive — <code>DISABLE_OUTER_LOOP=1</code>.
           </div>
         </div>
       </div>

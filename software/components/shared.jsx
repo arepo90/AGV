@@ -39,6 +39,7 @@ function useTelemetry(connected) {
       imu: { ...prev.imu, ...t.imu },
       proximity: t.proximity, current: t.current,
       qtr: t.qtr, control: t.control, flags: t.flags,
+      motors: t.motors,
       log: t.log,
       uptime: (t.timestamp_ms ?? 0) / 1000.0,
       comms: { ...prev.comms, connected: true, rxPackets: prev.comms.rxPackets + 1 },

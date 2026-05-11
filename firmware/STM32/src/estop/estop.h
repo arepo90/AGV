@@ -8,9 +8,9 @@
 /* =============================================================================
  *  Virtual E-STOP arbitration.
  *
- *  Multiple independent sources may assert. The driver SLEEP pins are pulled
- *  LOW whenever any bit is set — this is enforced once per main-loop iteration
- *  so the worst-case response from any source set to clear is one tick.
+ *  Multiple independent sources may assert. SLEEP pin control is owned by
+ *  main.c, which checks both E-STOP state and FUNC_STANDBY to decide whether
+ *  motors should be enabled.
  *
  *  Sources fall into two classes:
  *    - Auto-clearing (proximity, cargo): clear themselves when their condition
@@ -32,9 +32,5 @@ void           estop_clear_all(void);                       /* RESET packet hand
 
 bool           estop_active(void);
 uint8_t        estop_sources(void);                         /* current bitmask */
-
-/* Apply current state to motor SLEEP pins. Call once per main-loop iteration
- * before any motor command is written. Returns true if motors are enabled. */
-bool           estop_apply(void);
 
 #endif /* ESTOP_H */

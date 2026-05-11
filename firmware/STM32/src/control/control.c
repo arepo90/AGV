@@ -67,9 +67,8 @@ static float clamp(float x, float lo, float hi) {
 }
 
 void control_tick(float dt_s) {
-    /* E-STOP path: zero PWM, reset PIDs. Nothing else happens. SLEEP is already
-     * driven LOW by estop_apply() so the driver outputs are dead anyway —
-     * this is purely about keeping the controller state clean for resume. */
+    /* E-STOP path: zero PWM, reset PIDs. SLEEP is handled by main.c; this
+     * keeps controller state clean so motion resumes without windup on clear. */
     if (estop_active()) {
         reset_all_pids();
         motors_set_pwm_signed(MOTOR_LEFT,  0.0f);

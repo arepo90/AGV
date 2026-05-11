@@ -14,6 +14,10 @@ static pid_t    s_pid;
 static bool     s_lost = false;
 static float    s_position = 0.0f;
 
+/* Runtime-mutable tunables (defaults from config.h; PARAM_UPDATE may override). */
+static float    s_cruise_mps     = LINE_FOLLOW_CRUISE_MPS;
+static float    s_lost_threshold = QTR_LINE_LOST_THRESHOLD;
+
 /* ---- Calibration state machine ----------------------------------------- */
 static bool     s_cal_active = false;
 static uint16_t s_cal_min[ADC_IDX_QTR_COUNT];
@@ -187,7 +191,7 @@ void nav_line_get(float dt_s, float *v_target, float *omega_target) {
     }
 
     /* Line-lost detection — if no sensor sees the line, halt and log once. */
-    if (total < QTR_LINE_LOST_THRESHOLD) {
+    if (total < s_lost_threshold) {
         if (!s_lost) {
             log_record(LOG_MOD_NAV, LOG_SEV_WARN, LOG_CODE_LINE_LOST, 0);
             s_lost = true;
@@ -211,9 +215,17 @@ void nav_line_get(float dt_s, float *v_target, float *omega_target) {
     float omega = pid_step(&s_pid, 0.0f, s_position, dt_s);
 
     /* Slow down for sharp corrections so we don't overshoot. */
-    float v = LINE_FOLLOW_CRUISE_MPS;
+    float v = s_cruise_mps;
     if (s_position >  0.6f || s_position < -0.6f) v *= 0.5f;
 
     *v_target = v;
     *omega_target = omega;
+}
+
+void nav_line_set_cruise_mps(float v) {
+    if (v >= 0.0f && v <= 5.0f) s_cruise_mps = v;
+}
+
+void nav_line_set_lost_threshold(float t) {
+    if (t > 0.0f && t < 8.0f) s_lost_threshold = t;
 }

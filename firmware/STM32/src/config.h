@@ -20,7 +20,7 @@
 #define DISABLE_HEARTBEAT_WATCH     0
 #define DISABLE_ESTOP               0
 #define DISABLE_PROXIMITY           0
-#define DISABLE_LOAD_CELLS          1
+#define DISABLE_LOAD_CELLS          0
 #define DISABLE_IMU                 1
 #define DISABLE_CURRENT_SENSE       0
 #define DISABLE_ODOMETRY            0
@@ -150,7 +150,7 @@
 #define CAUTION_LEVEL_CRITICAL      0.2f
 
 /* ---- Motor current sense (Pololu G2: ~20 mV/A; 3.3V / 4096 → ~40.3 mA/count) */
-#define MOTOR_CURRENT_MA_PER_COUNT_NUM  40283u
+#define MOTOR_CURRENT_MA_PER_COUNT_NUM  1611u
 #define MOTOR_CURRENT_MA_PER_COUNT_DEN  1000u
 #define MOTOR_OVERCURRENT_MA            10000u  /* trip threshold per motor */
 

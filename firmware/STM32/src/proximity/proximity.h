@@ -22,6 +22,6 @@
  */
 
 void     proximity_init(void);
-uint8_t  proximity_obstructed(void);   /* bits 6..9 set if obstructed */
+uint16_t proximity_obstructed(void);   /* bits 6..9 set if obstructed */
 
 #endif /* PROXIMITY_H */

@@ -23,12 +23,10 @@
  *     module just maps the signed duty into hardware registers.
  *
  *  SLEEP behaviour:
- *     LOW  → driver outputs Hi-Z. Boot default. E-STOP state.
- *     HIGH → driver active.
- *  motors_set_enabled(false) is the firmware-side mechanism the E-STOP layer
- *  uses to disable the driver. It does not touch PWM/DIR — those keep their
- *  last-written values, which is fine because the driver ignores them in
- *  sleep mode.
+ *     LOW  → driver outputs Hi-Z. Boot default.
+ *     HIGH → driver active (any motion function other than STANDBY, no E-STOP).
+ *  main.c owns the sleep decision: sleep when estop_active() || FUNC_STANDBY.
+ *  PWM brake is used to stop within a function; SLEEP is for true idle/fault.
  * =============================================================================
  */
 

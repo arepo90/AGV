@@ -39,4 +39,10 @@ uint8_t nav_traj_count(void);
 uint8_t nav_traj_active_index(void);
 bool  nav_traj_complete(void);
 
+/* Live-tunable parameters (PARAM_UPDATE entry points). Lookahead is stored
+ * for a future pure-pursuit implementation; the current point-and-steer
+ * controller does not consume it. */
+void  nav_traj_set_cruise_mps(float v);
+void  nav_traj_set_lookahead_m(float m);
+
 #endif /* NAV_TRAJ_H */
