@@ -1,0 +1,6 @@
+# op: 0=begin, 1=add point, 2=commit, 3=cancel
+uint8 op
+agv_msgs/RampPoint point
+---
+bool success
+uint8 nack_code

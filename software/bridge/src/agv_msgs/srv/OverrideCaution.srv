@@ -1,0 +1,4 @@
+float32 scalar              # [0.0, 1.0]
+---
+bool success
+uint8 nack_code

@@ -1,0 +1,5 @@
+# mode: 0=SUPERVISED, 1=UNSUPERVISED
+uint8 mode
+---
+bool success
+uint8 nack_code             # populated when success=false

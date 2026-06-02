@@ -1,0 +1,21 @@
+# Udev rules for the AGV's USB serial devices on the Jetson.
+#
+# Install on the Jetson with:
+#   sudo cp 99-agv.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Verify with `ls -l /dev/agv-esp32 /dev/agv-uno` once the boards are plugged in.
+# The launch file's defaults already point at these symlinks.
+#
+# VID 303A:1001 is the Espressif USB JTAG/serial unit on the C3. If you
+# flash a build that exposes a different USB descriptor, run `lsusb`
+# while the board is connected and update VID/PID accordingly.
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", SYMLINK+="agv-esp32", MODE="0666"
+
+# Arduino UNO status panel. Genuine UNO R3 uses the ATmega16U2 (2341:0043);
+# the 2341:0001 descriptor and the CH340 clone (1a86:7523) are listed too —
+# keep only the line matching your board (run `lsusb` to confirm).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0043", SYMLINK+="agv-uno", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="0001", SYMLINK+="agv-uno", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="agv-uno", MODE="0666"

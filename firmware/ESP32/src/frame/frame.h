@@ -5,14 +5,13 @@
 #include "config.h"
 
 /* =============================================================================
- *  Frame parser (UART side).
+ *  Streaming frame parser. The ESP32 no longer validates or NACKs — that lives
+ *  on the Jetson side now. This parser is kept solely to identify complete
+ *  PKT_TLM_CORE frames as they pass through, so the local stack-light and
+ *  onboard LED can mirror firmware state without reaching back to the Jetson.
  *
- *  The relay never modifies frame contents — it only validates CRC + version
- *  before forwarding. Callbacks below fire when a complete frame is decoded
- *  or when something is wrong.
- *
- *  WebSocket-side validation is a single function call (validate_frame) since
- *  WS messages arrive in one piece.
+ *  The on_complete callback fires for every successfully-parsed frame
+ *  (caller filters by TYPE). on_error is best-effort and informational.
  * =============================================================================
  */
 
@@ -25,28 +24,6 @@ typedef enum {
     FRAME_INCOMPLETE,
 } frame_result_t;
 
-/* Per-frame metadata extractable without trusting CRC, used for NACK responses. */
-typedef struct {
-    uint8_t  ver;
-    uint8_t  seq;
-    uint8_t  type;
-    uint8_t  len;
-} frame_header_t;
-
-/* Validate a complete frame buffer.
- *  - If FRAME_OK, *header is populated.
- *  - If FRAME_BAD_CRC and total >= 6, *header is populated with the suspect SEQ
- *    so the caller can NACK it (best-effort — corrupt frame, take with salt). */
-frame_result_t frame_validate(const uint8_t *frame, size_t total_len,
-                              frame_header_t *header);
-
-/* Build a NACK frame ready to send. Returns total length. */
-size_t frame_build_nack(uint8_t out[PROTO_MAX_FRAME], uint8_t seq, uint8_t err);
-
-/* =========================================================================
- *  Streaming UART parser
- *  ========================================================================= */
-
 typedef void (*frame_complete_cb_t)(const uint8_t *frame, size_t total_len);
 typedef void (*frame_error_cb_t)(frame_result_t err, uint8_t suspect_seq);
 
@@ -58,7 +35,7 @@ typedef struct {
     uint8_t  ver, seq, type, len;
     uint16_t payload_idx;
     uint16_t crc_received;
-    uint8_t  buf[PROTO_MAX_FRAME];   /* full frame as it arrives */
+    uint8_t  buf[PROTO_MAX_FRAME];
     uint16_t buf_idx;
 
     frame_complete_cb_t on_complete;

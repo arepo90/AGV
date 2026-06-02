@@ -1,224 +1,109 @@
 /* =============================================================================
- *  AGV Wi-Fi relay (ESP32-C3 SuperMini)
+ *  AGV USB-CDC ↔ UART bridge (ESP32-C3 SuperMini)
  *
- *  Transparent bidirectional bridge between the workstation (over Wi-Fi /
- *  WebSocket binary) and the STM32 (over UART). The ESP32 does no protocol
- *  interpretation beyond:
+ *  The ESP32 is now a transparent byte pump between the Jetson (over the
+ *  ESP32-C3's native USB-CDC, exposed as `Serial`) and the STM32 (over UART1).
  *
- *    - validating frame magic, version, length, and CRC on UART RX
- *    - validating same on WS RX (paranoia — TCP already covers integrity)
- *    - NACKing the originator when CRC fails (so they can retry)
- *    - dropping unknown-version frames
+ *  Direction summary:
+ *    USB-CDC (Jetson) ─►  UART (STM32)   pure byte pump, no parsing
+ *    UART (STM32)     ─►  USB-CDC (Jetson) + parser tap for LED rings + status LED
  *
- *  AGV state lives entirely on the STM32. This relay never blocks a frame.
+ *  No WS, no Wi-Fi, no NACKing, no frame validation in either direction:
+ *  the Jetson's bridge handles every protocol concern. Frame parsing is
+ *  kept only to drive the stack-light and onboard status LED from
+ *  telemetry — that visual feedback is the ESP32's only remaining duty
+ *  besides byte forwarding.
  * =============================================================================
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
-#include <AsyncTCP.h>
-#include <ESPAsyncWebServer.h>
 
 #include "config.h"
 #include "frame.h"
-#include "stacklight.h"
+#include "ledring.h"
 #include "status_led.h"
 
-static AsyncWebServer  s_server(80);
-static AsyncWebSocket  s_ws(WS_PATH);
-static HardwareSerial  s_stm32(1);
+static HardwareSerial s_stm32(1);
+static frame_parser_t s_uart_parser;
 
-static frame_parser_t  s_uart_parser;
-
-/* WS callbacks run on the AsyncTCP task; loop() runs on the Arduino task. The
- * AsyncWebSocket library is designed to be safely called across tasks, and an
- * aligned pointer write/read is atomic on ESP32-C3 (RISC-V single-core), so we
- * don't need a mutex around s_client. */
-static AsyncWebSocketClient *s_client = nullptr;
-
-/* ---- UART side: forward complete frames to WS ---------------------------- */
-
-/* Inspect telemetry frames as they pass through and update the stack-light
- * state. Frame layout is fixed by config.h §Packet protocol — index 4 is the
- * TYPE byte and index 6 onward is payload. Telemetry payload byte offsets:
- *   [0..3]   timestamp_ms
- *   [4]      mode
- *   [5]      function
- *   [6]      estop_sources
- *   [7]      caution_sources
- * (See main.c send_telemetry() for the full layout.) */
+/* Tap completed UART frames: the CORE telemetry stream drives the local
+ * indicators. Frame layout: index 4 = TYPE, index 5 = LEN, index 6+ = payload.
+ * CORE payload: timestamp(u32) then mode/function/estop/caution at offsets
+ * 4/5/6/7, and led_mode at offset 39 (drives the ring animation style). */
 static void tap_telemetry(const uint8_t *frame, size_t total_len) {
-    if (total_len < 14) return;     /* header(6) + 8 bytes of telemetry */
+    if (total_len < 16) return;     /* header(6) + 10 leading payload bytes */
     uint8_t type = frame[4];
     uint8_t len  = frame[5];
-    if (type != 0x03 /* PKT_TELEMETRY */) return;
-    if (len < 8) return;            /* too short for the fields we want */
+    if (type != 0x03 /* PKT_TLM_CORE */) return;
+    if (len < 10) return;
 
-    uint8_t mode            = frame[6 + 4];
-    uint8_t function        = frame[6 + 5];
-    uint8_t estop_sources   = frame[6 + 6];
-    uint8_t caution_sources = frame[6 + 7];
+    uint8_t  mode            = frame[6 + 4];
+    uint8_t  function        = frame[6 + 5];
+    uint16_t estop_sources   = (uint16_t)(frame[6 + 6] | (frame[6 + 7] << 8));
+    uint16_t caution_sources = (uint16_t)(frame[6 + 8] | (frame[6 + 9] << 8));
+    uint8_t  led_mode        = (len >= 42) ? frame[6 + 41] : 0;
 
-    stacklight_update_from_telemetry(estop_sources, caution_sources, millis());
-
-    /* Update status LED: ESTOP active if any bit set, mode is 0=SUPERVISED/1=UNSUPERVISED */
+    ledring_update_from_telemetry(estop_sources, caution_sources, led_mode, millis());
     status_led_update_estop(estop_sources != 0);
-    status_led_update_mode(mode == 0);  /* true = supervised, false = unsupervised */
-    status_led_update_function(function); /* 0=STANDBY, 1=REMOTE, 2=LINE, 3=TRAJ */
+    status_led_update_mode(mode == 0);          /* mode 0 = SUPERVISED */
+    status_led_update_function(function);
 }
 
-static void uart_on_complete(const uint8_t *frame, size_t total_len) {
+static void on_complete(const uint8_t *frame, size_t total_len) {
     tap_telemetry(frame, total_len);
-
-    AsyncWebSocketClient *c = s_client;
-    if (c && c->status() == WS_CONNECTED) {
-        c->binary(const_cast<uint8_t *>(frame), total_len);
-    }
 }
 
-static void uart_on_error(frame_result_t err, uint8_t suspect_seq) {
-    /* NACK back to STM32 so it knows we dropped a frame.
-     * STM32-originated traffic is fire-and-forget (telemetry, log), so this is
-     * mostly diagnostic — STM32 will log the inbound NACK. */
-    if (err == FRAME_BAD_CRC) {
-        uint8_t nack[PROTO_MAX_FRAME];
-        size_t n = frame_build_nack(nack, suspect_seq, NACK_BAD_CRC);
-        s_stm32.write(nack, n);
-    }
-#if DEBUG_LOG_BAD_FRAMES
-    Serial.printf("[uart] frame error %d seq=0x%02X\n", (int)err, suspect_seq);
-#endif
+static void on_error(frame_result_t /*err*/, uint8_t /*suspect_seq*/) {
+    /* Bytes still pass through to USB unchanged; the Jetson's parser will
+     * notice the CRC mismatch and log it. Parser-side errors here only mean
+     * "this byte stream desynced from frame boundaries" — we resync silently. */
 }
 
-static void uart_drain(void) {
+/* ---- UART → USB: stream bytes through; feed tap parser alongside -------- */
+static void pump_uart_to_usb(void) {
     while (s_stm32.available()) {
-        frame_parser_feed(&s_uart_parser, (uint8_t)s_stm32.read());
+        /* Pull up to 256 bytes per loop iteration to keep both pumps moving. */
+        uint8_t buf[256];
+        int avail = s_stm32.available();
+        if (avail > (int)sizeof(buf)) avail = sizeof(buf);
+        int n = s_stm32.readBytes(buf, avail);
+        if (n <= 0) break;
+        Serial.write(buf, n);
+        for (int i = 0; i < n; i++) frame_parser_feed(&s_uart_parser, buf[i]);
     }
 }
 
-/* ---- WS side: validate, then forward to UART ---------------------------- */
-
-static void ws_handle_binary(AsyncWebSocketClient *client,
-                             const uint8_t *data, size_t len) {
-    frame_header_t hdr;
-    frame_result_t r = frame_validate(data, len, &hdr);
-
-    if (r == FRAME_OK) {
-        s_stm32.write(data, len);
-        return;
-    }
-
-    /* Bad WS frame — NACK back over WS so the workstation can retry. */
-#if DEBUG_LOG_BAD_FRAMES
-    Serial.printf("[ws] frame error %d len=%u\n", (int)r, (unsigned)len);
-#endif
-
-    uint8_t err_code;
-    switch (r) {
-    case FRAME_BAD_CRC:     err_code = NACK_BAD_CRC;     break;
-    case FRAME_BAD_VERSION: err_code = NACK_BAD_VERSION; break;
-    default:                err_code = NACK_BAD_LENGTH;  break;
-    }
-
-    uint8_t nack[PROTO_MAX_FRAME];
-    size_t n = frame_build_nack(nack, hdr.seq, err_code);
-    client->binary(nack, n);
-}
-
-static void ws_event(AsyncWebSocket * /*server*/, AsyncWebSocketClient *client,
-                     AwsEventType type, void *arg, uint8_t *data, size_t len) {
-    switch (type) {
-    case WS_EVT_CONNECT:
-        if (s_client && s_client != client) {
-            /* One workstation at a time — kick the new arrival. */
-            client->close(1000, "busy");
-            return;
-        }
-        s_client = client;
-        Serial.printf("[ws] client connected id=%u from %s\n",
-                      client->id(), client->remoteIP().toString().c_str());
-        break;
-
-    case WS_EVT_DISCONNECT:
-        if (s_client == client) s_client = nullptr;
-        Serial.printf("[ws] client disconnected id=%u\n", client->id());
-        break;
-
-    case WS_EVT_DATA: {
-        AwsFrameInfo *info = (AwsFrameInfo *)arg;
-        if (info->final && info->index == 0 && info->len == len &&
-            info->opcode == WS_BINARY) {
-            ws_handle_binary(client, data, len);
-        } else if (info->opcode == WS_TEXT) {
-            /* Text frames not expected — ignored. */
-        }
-        break;
-    }
-
-    default:
-        break;
+/* ---- USB → UART: pure byte pump ----------------------------------------- */
+static void pump_usb_to_uart(void) {
+    while (Serial.available()) {
+        uint8_t buf[256];
+        int avail = Serial.available();
+        if (avail > (int)sizeof(buf)) avail = sizeof(buf);
+        int n = Serial.readBytes(buf, avail);
+        if (n <= 0) break;
+        s_stm32.write(buf, n);
     }
 }
-
-/* ---- Status page (minimal — just confirms the AP is up) ----------------- */
-
-static const char STATUS_HTML[] PROGMEM = R"html(
-<!DOCTYPE html><html><head><meta charset="utf-8"><title>AGV Relay</title>
-<style>body{font-family:system-ui;background:#0f172a;color:#e2e8f0;padding:24px}
-code{background:#1e293b;padding:2px 6px;border-radius:4px}</style></head><body>
-<h1>AGV Wi-Fi Relay</h1>
-<p>Status: running</p>
-<p>WebSocket endpoint: <code>ws://192.168.4.1/ws</code> (binary frames)</p>
-<p>This page is for verifying the AP — control happens over the WebSocket.</p>
-</body></html>
-)html";
 
 /* ---- setup / loop ------------------------------------------------------- */
-
 void setup() {
-    Serial.begin(115200);
-    delay(50);
+    /* USB-CDC `Serial` carries the binary protocol — no debug prints allowed.
+     * Begin with a baud rate hint for hosts that care; CDC ignores it. */
+    Serial.begin(921600);
 
-    Serial.println();
-    Serial.println("[boot] AGV relay starting");
-
-    /* Stack light first so the operator gets visual feedback while the rest
-     * of bring-up runs (red breathing during INIT). */
-    stacklight_init();
-
-    /* Status LED (onboard LED for system status indication) */
+    ledring_init();
     status_led_init(STATUS_LED_PIN, STATUS_LED_ACTIVE_LOW);
 
-    /* UART to STM32 */
     s_stm32.setRxBufferSize(UART_RX_BUFSIZE);
     s_stm32.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
 
-    frame_parser_init(&s_uart_parser, uart_on_complete, uart_on_error);
-
-    /* Wi-Fi AP */
-    WiFi.mode(WIFI_AP);
-    bool ok = WiFi.softAP(AP_SSID, AP_PASS, AP_CHANNEL);
-    Serial.printf("[wifi] AP %s on channel %d: %s\n",
-                  AP_SSID, AP_CHANNEL, ok ? "up" : "FAILED");
-    Serial.printf("[wifi] AP IP: %s\n", WiFi.softAPIP().toString().c_str());
-
-    /* HTTP + WS */
-    s_ws.onEvent(ws_event);
-    s_server.addHandler(&s_ws);
-    s_server.on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
-        req->send(200, "text/html", STATUS_HTML);
-    });
-    s_server.begin();
-    
-
-    Serial.println("[boot] ready");
+    frame_parser_init(&s_uart_parser, on_complete, on_error);
 }
 
 void loop() {
-    uart_drain();
-    s_ws.cleanupClients();
+    pump_uart_to_usb();
+    pump_usb_to_uart();
     uint32_t now = millis();
-    stacklight_tick(now);
+    ledring_tick(now);
     status_led_tick(now);
-    /* No delay() — UART throughput at 921600 demands prompt draining. */
 }

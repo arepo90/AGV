@@ -1,0 +1,4 @@
+uint16 source_mask          # bits to force-clear (see ESTOP_SRC_*; bit7=TOF, bit8=battery)
+---
+bool success
+uint8 nack_code

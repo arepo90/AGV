@@ -1,0 +1,6 @@
+# op: 0=clear list, 1=append (uses point), 2=commit (placeholder for future FRAG upload)
+uint8 op
+agv_msgs/TrajectoryPoint point
+---
+bool success
+uint8 nack_code
