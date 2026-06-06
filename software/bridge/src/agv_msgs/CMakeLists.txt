@@ -15,6 +15,7 @@ set(msg_files
   msg/TlmDrive.msg
   msg/TlmSensors.msg
   msg/TlmQtr.msg
+  msg/LidarSegments.msg
   msg/LogEntry.msg
   msg/ParamUpdate.msg
   msg/ParamUpdateBatch.msg

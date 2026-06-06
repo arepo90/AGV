@@ -22,14 +22,14 @@ void encoders_init(void) {
 void encoders_reset(void) {
     s_count[SIDE_LEFT]   = 0;
     s_count[SIDE_RIGHT]  = 0;
-    s_last[SIDE_LEFT]    = qenc_raw(0);
-    s_last[SIDE_RIGHT]   = qenc_raw(1);
+    s_last[SIDE_LEFT]    = qenc_raw(1);
+    s_last[SIDE_RIGHT]   = qenc_raw(0);
     s_vel_mps[SIDE_LEFT]  = 0.0f;
     s_vel_mps[SIDE_RIGHT] = 0.0f;
 }
 
 static void update_side(side_t side, uint8_t ch, bool invert, float dt_s) {
-    uint16_t now = qenc_raw(ch);
+    uint16_t now = qenc_raw(ch == 0 ? 1 : 0);
     /* int16 cast handles wrap regardless of timer width. */
     int32_t d = (int16_t)(now - s_last[side]);
     s_last[side] = now;

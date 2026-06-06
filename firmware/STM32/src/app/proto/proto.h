@@ -24,6 +24,7 @@
 #define PKT_PARAM_UPDATE   0x02u
 #define PKT_TLM_CORE       0x03u   /* STM32→WS: operational state + pose (fast) */
 #define PKT_HEARTBEAT      0x04u
+#define PKT_LIDAR_SEGMENTS 0x07u   /* WS→STM32: Jetson-segmented LaserScan distances (u16 mm[]) */
 #define PKT_ACK            0x05u
 #define PKT_NACK           0x06u
 #define PKT_LOG            0x08u   /* STM32→WS: one fault-log entry */
@@ -84,14 +85,20 @@
 #define PARAM_RAMP_JERK_ANG        0x42u
 #define PARAM_RAMP_TAU_LIN         0x43u
 #define PARAM_RAMP_TAU_ANG         0x44u
-/* Indicator lights (ESP32 rings): 0 = pulse, 1 = snake. Reported in TLM_CORE. */
-#define PARAM_LED_MODE             0x50u
+/* Indicator lights (ESP32 rings). All reported in TLM_CORE for the ESP32 tap. */
+#define PARAM_LED_MODE             0x50u   /* animation: 0 = pulse, 1 = snake */
+#define PARAM_LED_BASE             0x51u   /* indicator ring base: 0 = off, 1 = white */
+#define PARAM_LED_INDICATOR_MODE   0x52u   /* indicator spread: 0 = fixed, 1 = responsive */
 /* TOF distance bands (mm) + 3S low-voltage thresholds (mV). */
 #define PARAM_TOF_CAUTION_MM       0x60u
 #define PARAM_TOF_CRITICAL_MM      0x61u
 #define PARAM_TOF_ESTOP_MM         0x62u
 #define PARAM_BATT_3S_CAUTION_MV   0x63u
 #define PARAM_BATT_3S_ESTOP_MV     0x64u
+/* LiDAR distance bands (mm); same policy as TOF. */
+#define PARAM_LIDAR_CAUTION_MM     0x65u
+#define PARAM_LIDAR_CRITICAL_MM    0x66u
+#define PARAM_LIDAR_ESTOP_MM       0x67u
 
 /* ---- NACK error codes ----------------------------------------------------- */
 #define NACK_BAD_CRC               0x01u

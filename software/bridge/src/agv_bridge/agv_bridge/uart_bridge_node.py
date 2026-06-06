@@ -41,7 +41,7 @@ from std_msgs.msg import Empty
 
 from agv_msgs.msg import (
     TlmCore, TlmDrive, TlmSensors, TlmQtr,
-    LogEntry, ParamUpdate, ParamUpdateBatch,
+    LidarSegments, LogEntry, ParamUpdate, ParamUpdateBatch,
 )
 from agv_msgs.srv import (
     SetMode, SetFunction, VirtualEstop, OverrideEstopSource, OverrideCaution,
@@ -110,6 +110,8 @@ class UartBridgeNode(Node):
                                  callback_group=cb)
         self.create_subscription(ParamUpdateBatch, '/agv/param_update',
                                  self._on_param_update, 10, callback_group=cb)
+        self.create_subscription(LidarSegments, '/agv/lidar_segments',
+                                 self._on_lidar_segments, 10, callback_group=cb)
 
         # ---- Services (ROS → UART, with ACK round-trip) -----------------
         self.create_service(SetMode, '/agv/set_mode', self._svc_set_mode, callback_group=cb)
@@ -255,6 +257,7 @@ class UartBridgeNode(Node):
         msg.current_right_ma = c.current_right_ma
         msg.proximity_obstructed = c.proximity_obstructed
         msg.led_mode = c.led_mode
+        msg.led_indicator_cfg = c.led_indicator_cfg
         self._pub_core.publish(msg)
 
         # Standard ROS odometry for rviz/SLAM tooling.
@@ -300,21 +303,28 @@ class UartBridgeNode(Node):
         msg.header.stamp = now
         msg.header.frame_id = self._frame_id
         msg.load_cells = list(s.load_cells)
-        msg.imu_yaw_deg = s.imu_yaw_deg
+        msg.imu_gyro_bias_dps = s.imu_gyro_bias_dps
         msg.imu_pitch_deg = s.imu_pitch_deg
         msg.imu_roll_deg = s.imu_roll_deg
-        msg.imu_calib = s.imu_calib
+        msg.imu_status = s.imu_status
         msg.tof_mm = list(s.tof_mm)
         msg.batt_3s_mv = s.batt_3s_mv
         msg.batt_6s_mv = s.batt_6s_mv
+        msg.lidar_mm = list(s.lidar_mm)
         self._pub_sensors.publish(msg)
 
-        # Standard ROS IMU (Euler-derived yaw quaternion; covariances unknown).
+        # Standard ROS IMU. The MPU6050 has no magnetometer, so there is no
+        # absolute yaw: orientation carries only the gravity-referenced roll/pitch
+        # (yaw flagged unobservable by a huge covariance). The fused heading lives
+        # on /agv/odom (odom_theta) instead.
         imu = Imu()
         imu.header.stamp = now
         imu.header.frame_id = self._frame_id
-        imu.orientation = _yaw_to_quat(math.radians(s.imu_yaw_deg))
-        imu.orientation_covariance[0] = -1.0
+        imu.orientation = _rpy_to_quat(math.radians(s.imu_roll_deg),
+                                       math.radians(s.imu_pitch_deg), 0.0)
+        imu.orientation_covariance = [0.05, 0.0, 0.0,
+                                      0.0, 0.05, 0.0,
+                                      0.0, 0.0, 1.0e6]
         imu.angular_velocity_covariance[0] = -1.0
         imu.linear_acceleration_covariance[0] = -1.0
         self._pub_imu.publish(imu)
@@ -367,6 +377,13 @@ class UartBridgeNode(Node):
             for p in msg.params
         )
         self._send_frame(proto.PKT_PARAM_UPDATE, payload, expect_ack=False)
+
+    def _on_lidar_segments(self, msg: LidarSegments) -> None:
+        # Jetson-side lidar_node output, pushed to the firmware so it owns the
+        # safety decision. High-rate and fire-and-forget, like cmd_vel — the
+        # firmware treats stale data as "clear", so a dropped frame is harmless.
+        payload = proto.pack_lidar_segments(msg.mm)
+        self._send_frame(proto.PKT_LIDAR_SEGMENTS, payload, expect_ack=False)
 
     # =====================================================================
     # ROS → UART (services with ACK round-trip)
@@ -460,6 +477,18 @@ def _yaw_to_quat(yaw_rad: float) -> Quaternion:
     q = Quaternion()
     q.z = math.sin(yaw_rad * 0.5)
     q.w = math.cos(yaw_rad * 0.5)
+    return q
+
+
+def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> Quaternion:
+    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
+    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
+    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
+    q = Quaternion()
+    q.w = cr * cp * cy + sr * sp * sy
+    q.x = sr * cp * cy - cr * sp * sy
+    q.y = cr * sp * cy + sr * cp * sy
+    q.z = cr * cp * sy - sr * sp * cy
     return q
 
 

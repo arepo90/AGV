@@ -1,14 +1,29 @@
 #!/usr/bin/env python3
 """
-PID tuning GUI for the AGV bench rig.
+PID tuning GUI for the AGV — talks to the *production* firmware natively.
 
-Talks to the STM32_tunning firmware over the same binary protocol used in
-production — only TYPE bytes 0x10 (telemetry) and 0x11 (command) are used,
-so the existing ESP32 USB-CDC byte pump works unchanged.
+This drives the real firmware over the production binary protocol (VER 0x03), not
+a separate bench rig. It plugs into the same USB-CDC link the ESP32 byte-pump
+exposes, so you can tune the per-wheel velocity loop on the actual robot:
 
-Plots per-wheel target/measured velocity, error, PID integrator state, and
-PWM duty in real time. Live-editable kp/ki/kd gains per wheel. Step commands
-and WASD/arrow-key joystick.
+  * Gains   → PKT_PARAM_UPDATE with the per-wheel PI + feedforward ids
+              (Kp/Ki/Kff, NOT Kp/Ki/Kd — the firmware has no derivative term).
+  * Targets → mode SUPERVISED + function REMOTE_CONTROL, then CMD_VEL_CMD (v, ω).
+              Per-wheel step targets are converted to a chassis (v, ω) so the
+              firmware's kinematic split reproduces them (needs WHEEL_BASE_M to
+              match the firmware).
+  * Telemetry → the TLM_DRIVE stream (per-wheel target/measured velocity + duty),
+              plus TLM_CORE for mode/function/E-STOP status.
+  * Heartbeat → PKT_HEARTBEAT keeps the firmware's watchdog from degrading to
+              UNSUPERVISED (which drops REMOTE_CONTROL to STANDBY) and then E-STOP.
+
+Notes:
+  * `duty ≈ Kff·v_target` at steady state — that feedforward is why duty has a
+    floor even with Kp/Ki near zero. Zero Kff to see the loop without it.
+  * TLM_DRIVE defaults to 20 Hz; raise TLM_DRIVE_HZ in firmware config.h for finer
+    step-response resolution.
+  * The chassis ramp shapes the target before the PI sees it; raise "Ramp accel"
+    for crisper velocity steps.
 
 Run: python3 tune.py [--port /dev/ttyACM0] [--baud 921600]
 Deps: pyqtgraph, pyserial, PyQt5 (or PyQt6).
@@ -54,35 +69,55 @@ QPushButton = QtWidgets.QPushButton
 QVBoxLayout = QtWidgets.QVBoxLayout
 QWidget = QtWidgets.QWidget
 
-# ─── Protocol constants (mirror STM32_tunning/src/config.h) ──────────────────
+# ─── Production protocol constants (mirror firmware/STM32/src/app/proto/proto.h) ─
 
-PROTO_MAGIC0   = 0xAA
-PROTO_MAGIC1   = 0x56
-PROTO_VERSION  = 0x01
+PROTO_MAGIC0  = 0xAA
+PROTO_MAGIC1  = 0x56
+PROTO_VERSION = 0x03            # v3: streamed telemetry + PI+FF gains
 
-PKT_TUNE_TELEM = 0x10
-PKT_TUNE_CMD   = 0x11
+# Packet types
+PKT_CMD          = 0x01
+PKT_PARAM_UPDATE = 0x02
+PKT_TLM_CORE     = 0x03
+PKT_HEARTBEAT    = 0x04
+PKT_ACK          = 0x05
+PKT_NACK         = 0x06
+PKT_TLM_DRIVE    = 0x09
+PKT_RESET        = 0xFF
 
-TCMD_SET_TARGETS    = 0x01
-TCMD_SET_GAINS      = 0x02
-TCMD_ENABLE         = 0x03
-TCMD_RESET_ENCODERS = 0x04
-TCMD_RESET_PID      = 0x05
-TCMD_HEARTBEAT      = 0x06
+# CMD sub-types (first payload byte)
+CMD_SET_FUNCTION = 0x01
+CMD_SET_MODE     = 0x02
+CMD_VEL_CMD      = 0x03         # f32 v, f32 ω
 
-# Telemetry payload layout — must match send_telemetry() in main.c.
-# u32 timestamp, u8 enabled, u8 reserved, u16 pad,
-# 5x f32 left (v_target, v_meas, error, integral, duty),
-# 5x f32 right,
-# 6x f32 gains (kpL, kiL, kdL, kpR, kiR, kdR) = 4+1+1+2 + 20 + 20 + 24 = 72 bytes
-TELEM_STRUCT = struct.Struct('<I B B H 5f 5f 6f')
-assert TELEM_STRUCT.size == 72
+# PARAM ids — per-wheel velocity PI + feedforward, and ramp accel.
+PARAM_MAX_LINEAR_ACCEL = 0x03
+PARAM_LEFT_KP   = 0x10
+PARAM_LEFT_KI   = 0x11
+PARAM_LEFT_KFF  = 0x12
+PARAM_RIGHT_KP  = 0x13
+PARAM_RIGHT_KI  = 0x14
+PARAM_RIGHT_KFF = 0x15
 
-# Replay buffer length in samples. At 100 Hz telemetry that's 10 s of history.
+# Mode / function enum values
+MODE_SUPERVISED     = 0x00
+FUNC_STANDBY        = 0x00
+FUNC_REMOTE_CONTROL = 0x01
+
+# TLM_DRIVE payload (firmware telemetry.c send_drive): f32 vl_tgt, vr_tgt,
+# vl_meas, vr_meas, duty_l, duty_r, u32 enc_l, enc_r  → 32 bytes.
+DRIVE_STRUCT = struct.Struct('<ffffffII')
+assert DRIVE_STRUCT.size == 32
+
+# TLM_CORE: we only need a few leading fields — u32 ts, u8 mode, u8 func,
+# u16 estop, u16 caution ... (43 bytes total). Parse the prefix only.
+CORE_MIN_LEN = 12
+
+# Replay buffer length in samples. At 20 Hz TLM_DRIVE that's ~50 s of history.
 HISTORY_LEN = 1000
 
-# Wheel geometry used only to translate joystick (v, ω) into per-wheel targets.
-# Doesn't need to match the firmware exactly — change here if your rig differs.
+# Wheel base used to translate (v_L, v_R) step targets and joystick (v, ω) into a
+# chassis (v, ω). MUST match firmware WHEEL_BASE_M for per-wheel steps to land.
 WHEEL_BASE_M = 0.20
 
 
@@ -241,16 +276,21 @@ class JoystickState:
 class MainWindow(QMainWindow):
     def __init__(self, default_port: str, baud: int) -> None:
         super().__init__()
-        self.setWindowTitle('AGV PID Tuning')
+        self.setWindowTitle('AGV PID Tuning (production protocol v3)')
         self.resize(1200, 800)
 
         self.link = Link()
         self.baud = baud
         self.t0 = time.monotonic()
         self.joy = JoystickState()
-        self.last_telem_t = 0.0
         self.telem_count = 0
         self.telem_count_t0 = time.monotonic()
+
+        # Commanded chassis target and whether we've put the firmware in
+        # REMOTE_CONTROL. Sent every beat tick (also serves as the heartbeat).
+        self.cmd_v = 0.0
+        self.cmd_w = 0.0
+        self.enabled = False
 
         self._build_ui(default_port)
 
@@ -290,7 +330,7 @@ class MainWindow(QMainWindow):
         self.status_lbl.setStyleSheet('color: #b00;')
         bar.addWidget(self.status_lbl)
         bar.addStretch(1)
-        self.rate_lbl = QLabel('Telem: —')
+        self.rate_lbl = QLabel('Drive: —')
         bar.addWidget(self.rate_lbl)
         self.enabled_lbl = QLabel('Motors: OFF')
         self.enabled_lbl.setStyleSheet('color: #888;')
@@ -306,13 +346,12 @@ class MainWindow(QMainWindow):
 
         # Action row
         actions = QHBoxLayout()
-        self.enable_btn  = QPushButton('ENABLE motors');   self.enable_btn.clicked.connect(lambda: self._send_enable(True))
-        self.disable_btn = QPushButton('DISABLE motors');  self.disable_btn.clicked.connect(lambda: self._send_enable(False))
-        self.reset_pid_btn = QPushButton('Reset PID');              self.reset_pid_btn.clicked.connect(lambda: self.link.send(PKT_TUNE_CMD, bytes([TCMD_RESET_PID])))
-        self.reset_enc_btn = QPushButton('Reset encoders');         self.reset_enc_btn.clicked.connect(lambda: self.link.send(PKT_TUNE_CMD, bytes([TCMD_RESET_ENCODERS])))
+        self.enable_btn  = QPushButton('ENABLE (REMOTE_CONTROL)'); self.enable_btn.clicked.connect(lambda: self._send_enable(True))
+        self.disable_btn = QPushButton('DISABLE (STANDBY)');       self.disable_btn.clicked.connect(lambda: self._send_enable(False))
+        self.clear_btn   = QPushButton('Clear E-STOP');            self.clear_btn.clicked.connect(self._clear_estop)
         self.enable_btn.setStyleSheet('background:#1a7; color:white; font-weight:bold;')
         self.disable_btn.setStyleSheet('background:#a22; color:white; font-weight:bold;')
-        for b in (self.enable_btn, self.disable_btn, self.reset_pid_btn, self.reset_enc_btn):
+        for b in (self.enable_btn, self.disable_btn, self.clear_btn):
             actions.addWidget(b)
         actions.addStretch(1)
         root.addLayout(actions)
@@ -334,12 +373,11 @@ class MainWindow(QMainWindow):
             p.setLabel('bottom', 'time (s)')
             return p
 
-        self.p_vel  = newplot(0); self.p_vel.setTitle('Velocity (m/s)')
+        self.p_vel  = newplot(0); self.p_vel.setTitle('Velocity (m/s) — TLM_DRIVE target vs measured')
         self.p_err  = newplot(1); self.p_err.setTitle('Tracking error = target − measured (m/s)')
-        self.p_int  = newplot(2); self.p_int.setTitle('PID integrator state ∫e dt (i-contribution = ki × this)')
-        self.p_duty = newplot(3); self.p_duty.setTitle('PWM duty [-1, +1]')
+        self.p_duty = newplot(2); self.p_duty.setTitle('PWM duty [-1, +1]  (steady-state ≈ Kff × v_target)')
         # Link x-axes so panning one pans all.
-        for p in (self.p_err, self.p_int, self.p_duty):
+        for p in (self.p_err, self.p_duty):
             p.setXLink(self.p_vel)
 
         self.c_vt_L = self.p_vel.plot([], [], name='L target',   pen=pL_dash)
@@ -349,9 +387,6 @@ class MainWindow(QMainWindow):
 
         self.c_e_L = self.p_err.plot([], [], name='L', pen=pL)
         self.c_e_R = self.p_err.plot([], [], name='R', pen=pR)
-
-        self.c_i_L = self.p_int.plot([], [], name='L', pen=pL)
-        self.c_i_R = self.p_int.plot([], [], name='R', pen=pR)
 
         self.c_d_L = self.p_duty.plot([], [], name='L', pen=pL)
         self.c_d_R = self.p_duty.plot([], [], name='R', pen=pR)
@@ -363,7 +398,6 @@ class MainWindow(QMainWindow):
         self.vt_L = deque(maxlen=HISTORY_LEN); self.vm_L = deque(maxlen=HISTORY_LEN)
         self.vt_R = deque(maxlen=HISTORY_LEN); self.vm_R = deque(maxlen=HISTORY_LEN)
         self.e_L  = deque(maxlen=HISTORY_LEN); self.e_R  = deque(maxlen=HISTORY_LEN)
-        self.i_L  = deque(maxlen=HISTORY_LEN); self.i_R  = deque(maxlen=HISTORY_LEN)
         self.d_L  = deque(maxlen=HISTORY_LEN); self.d_R  = deque(maxlen=HISTORY_LEN)
 
         self.setCentralWidget(central)
@@ -372,29 +406,33 @@ class MainWindow(QMainWindow):
         box = QGroupBox(title)
         lay = QGridLayout(box)
 
-        kp = QDoubleSpinBox(); kp.setDecimals(4); kp.setRange(0.0, 50.0); kp.setSingleStep(0.05); kp.setValue(1.0)
-        ki = QDoubleSpinBox(); ki.setDecimals(4); ki.setRange(0.0, 50.0); ki.setSingleStep(0.05); ki.setValue(0.0)
-        kd = QDoubleSpinBox(); kd.setDecimals(4); kd.setRange(0.0, 50.0); kd.setSingleStep(0.005); kd.setValue(0.0)
+        # Production loop is PI + feedforward (no derivative). Defaults mirror
+        # firmware config.h: Kp 0.5, Ki 2.0, Kff 1.0.
+        kp  = QDoubleSpinBox(); kp.setDecimals(4);  kp.setRange(0.0, 50.0); kp.setSingleStep(0.05);  kp.setValue(0.5)
+        ki  = QDoubleSpinBox(); ki.setDecimals(4);  ki.setRange(0.0, 50.0); ki.setSingleStep(0.05);  ki.setValue(2.0)
+        kff = QDoubleSpinBox(); kff.setDecimals(4); kff.setRange(0.0, 5.0); kff.setSingleStep(0.05); kff.setValue(1.0)
+        kff.setToolTip('Feedforward duty per m/s. Steady-state duty ≈ Kff × v_target — '
+                       'this is the "duty floor" you see with Kp/Ki near zero.')
 
-        lay.addWidget(QLabel('Kp:'), 0, 0); lay.addWidget(kp, 0, 1)
-        lay.addWidget(QLabel('Ki:'), 1, 0); lay.addWidget(ki, 1, 1)
-        lay.addWidget(QLabel('Kd:'), 2, 0); lay.addWidget(kd, 2, 1)
+        lay.addWidget(QLabel('Kp:'),  0, 0); lay.addWidget(kp,  0, 1)
+        lay.addWidget(QLabel('Ki:'),  1, 0); lay.addWidget(ki,  1, 1)
+        lay.addWidget(QLabel('Kff:'), 2, 0); lay.addWidget(kff, 2, 1)
 
         # Auto-apply on change (debounced through editingFinished)
-        for s in (kp, ki, kd):
+        for s in (kp, ki, kff):
             s.editingFinished.connect(self._maybe_apply_gains)
 
         if is_left:
-            self.kp_L_spin = kp; self.ki_L_spin = ki; self.kd_L_spin = kd
+            self.kp_L_spin = kp; self.ki_L_spin = ki; self.kff_L_spin = kff
         else:
-            self.kp_R_spin = kp; self.ki_R_spin = ki; self.kd_R_spin = kd
+            self.kp_R_spin = kp; self.ki_R_spin = ki; self.kff_R_spin = kff
         return box
 
     def _build_test_box(self) -> QGroupBox:
         box = QGroupBox('Test signal')
         lay = QGridLayout(box)
 
-        # Step
+        # Step (per-wheel targets, converted to chassis v/ω for REMOTE_CONTROL)
         self.v_L_spin = QDoubleSpinBox(); self.v_L_spin.setDecimals(3); self.v_L_spin.setRange(-2.0, 2.0); self.v_L_spin.setSingleStep(0.05); self.v_L_spin.setValue(0.30)
         self.v_R_spin = QDoubleSpinBox(); self.v_R_spin.setDecimals(3); self.v_R_spin.setRange(-2.0, 2.0); self.v_R_spin.setSingleStep(0.05); self.v_R_spin.setValue(0.30)
         lay.addWidget(QLabel('v_L target (m/s):'), 0, 0); lay.addWidget(self.v_L_spin, 0, 1)
@@ -403,24 +441,31 @@ class MainWindow(QMainWindow):
         zero_btn = QPushButton('Zero targets'); zero_btn.clicked.connect(self._send_zero)
         lay.addWidget(step_btn, 0, 2); lay.addWidget(zero_btn, 1, 2)
 
+        # Ramp accel — the chassis slew limiter shapes the target before the PI
+        # sees it; raise this for a crisper step. Mirrors firmware default 0.8.
+        self.accel_spin = QDoubleSpinBox(); self.accel_spin.setDecimals(2); self.accel_spin.setRange(0.05, 20.0); self.accel_spin.setSingleStep(0.5); self.accel_spin.setValue(0.80)
+        self.accel_spin.setToolTip('PARAM_MAX_LINEAR_ACCEL (m/s²). Raise for crisper velocity steps.')
+        self.accel_spin.editingFinished.connect(self._apply_accel)
+        lay.addWidget(QLabel('Ramp accel (m/s²):'), 2, 0); lay.addWidget(self.accel_spin, 2, 1)
+
         # Joystick
         sep = QFrame(); sep.setFrameShape(QFrame.HLine); sep.setFrameShadow(QFrame.Sunken)
-        lay.addWidget(sep, 2, 0, 1, 3)
+        lay.addWidget(sep, 3, 0, 1, 3)
 
         self.joy_chk = QCheckBox('Joystick mode (W/A/S/D or arrows)')
         self.joy_chk.toggled.connect(self._joy_toggled)
-        lay.addWidget(self.joy_chk, 3, 0, 1, 3)
+        lay.addWidget(self.joy_chk, 4, 0, 1, 3)
 
         max_v = QDoubleSpinBox(); max_v.setDecimals(2); max_v.setRange(0.05, 2.0); max_v.setSingleStep(0.05); max_v.setValue(self.joy.max_v)
         max_w = QDoubleSpinBox(); max_w.setDecimals(2); max_w.setRange(0.05, 5.0); max_w.setSingleStep(0.1);  max_w.setValue(self.joy.max_w)
         max_v.valueChanged.connect(lambda v: setattr(self.joy, 'max_v', v))
         max_w.valueChanged.connect(lambda v: setattr(self.joy, 'max_w', v))
-        lay.addWidget(QLabel('Joy max v:'),  4, 0); lay.addWidget(max_v, 4, 1)
-        lay.addWidget(QLabel('Joy max ω:'),  5, 0); lay.addWidget(max_w, 5, 1)
+        lay.addWidget(QLabel('Joy max v:'),  5, 0); lay.addWidget(max_v, 5, 1)
+        lay.addWidget(QLabel('Joy max ω:'),  6, 0); lay.addWidget(max_w, 6, 1)
 
         self.joy_status = QLabel('—')
         self.joy_status.setStyleSheet('color: #555;')
-        lay.addWidget(self.joy_status, 4, 2, 2, 1)
+        lay.addWidget(self.joy_status, 5, 2, 2, 1)
 
         return box
 
@@ -452,8 +497,19 @@ class MainWindow(QMainWindow):
         err = self.link.open(port, self.baud)
         if err:
             self._set_status(False, err)
-        else:
-            self._set_status(True)
+            return
+        self._set_status(True)
+        # Fresh session: reset plot time origin + buffers, push current UI gains
+        # and ramp accel so the firmware matches what's on screen. Motors stay
+        # OFF (STANDBY) until ENABLE is pressed.
+        self.t0 = time.monotonic()
+        for d in (self.t_buf, self.vt_L, self.vm_L, self.vt_R, self.vm_R,
+                  self.e_L, self.e_R, self.d_L, self.d_R):
+            d.clear()
+        self.enabled = False
+        self.cmd_v = self.cmd_w = 0.0
+        self._maybe_apply_gains()
+        self._apply_accel()
 
     def _set_status(self, connected: bool, msg: str = '') -> None:
         if connected:
@@ -469,26 +525,54 @@ class MainWindow(QMainWindow):
     # ──────────────── Commands ──────────────────────────────────────────────
 
     def _maybe_apply_gains(self) -> None:
-        # Always apply on any field commit; cheap.
-        payload = bytes([TCMD_SET_GAINS]) + struct.pack(
-            '<ffffff',
-            float(self.kp_L_spin.value()), float(self.ki_L_spin.value()), float(self.kd_L_spin.value()),
-            float(self.kp_R_spin.value()), float(self.ki_R_spin.value()), float(self.kd_R_spin.value()),
-        )
-        self.link.send(PKT_TUNE_CMD, payload)
+        # One PKT_PARAM_UPDATE batch of [u8 id][f32 value] tuples. The firmware
+        # applies Kp/Ki as a pair and Kff independently, per wheel.
+        pairs = [
+            (PARAM_LEFT_KP,   self.kp_L_spin.value()),
+            (PARAM_LEFT_KI,   self.ki_L_spin.value()),
+            (PARAM_LEFT_KFF,  self.kff_L_spin.value()),
+            (PARAM_RIGHT_KP,  self.kp_R_spin.value()),
+            (PARAM_RIGHT_KI,  self.ki_R_spin.value()),
+            (PARAM_RIGHT_KFF, self.kff_R_spin.value()),
+        ]
+        payload = b''.join(bytes([pid]) + struct.pack('<f', float(v)) for pid, v in pairs)
+        self.link.send(PKT_PARAM_UPDATE, payload)
+
+    def _apply_accel(self) -> None:
+        self.link.send(PKT_PARAM_UPDATE,
+                       bytes([PARAM_MAX_LINEAR_ACCEL]) + struct.pack('<f', float(self.accel_spin.value())))
+
+    def _set_target_from_wheels(self, v_L: float, v_R: float) -> None:
+        # Inverse of the firmware kinematic split: v_L/v_R → chassis (v, ω).
+        self.cmd_v = 0.5 * (v_L + v_R)
+        self.cmd_w = (v_R - v_L) / WHEEL_BASE_M
 
     def _send_step(self) -> None:
-        v_L = float(self.v_L_spin.value())
-        v_R = float(self.v_R_spin.value())
-        self.link.send(PKT_TUNE_CMD, bytes([TCMD_SET_TARGETS]) + struct.pack('<ff', v_L, v_R))
+        self._set_target_from_wheels(float(self.v_L_spin.value()), float(self.v_R_spin.value()))
+        if self.enabled:
+            self.link.send(PKT_CMD, bytes([CMD_VEL_CMD]) + struct.pack('<ff', self.cmd_v, self.cmd_w))
 
     def _send_zero(self) -> None:
         self.v_L_spin.setValue(0.0)
         self.v_R_spin.setValue(0.0)
-        self.link.send(PKT_TUNE_CMD, bytes([TCMD_SET_TARGETS]) + struct.pack('<ff', 0.0, 0.0))
+        self.cmd_v = self.cmd_w = 0.0
+        self.link.send(PKT_CMD, bytes([CMD_VEL_CMD]) + struct.pack('<ff', 0.0, 0.0))
 
     def _send_enable(self, enabled: bool) -> None:
-        self.link.send(PKT_TUNE_CMD, bytes([TCMD_ENABLE, 1 if enabled else 0]))
+        if enabled:
+            # Clear any latched E-STOP, take SUPERVISED, then REMOTE_CONTROL.
+            self.link.send(PKT_RESET, bytes([0x00]))
+            self.link.send(PKT_CMD, bytes([CMD_SET_MODE, MODE_SUPERVISED]))
+            self.link.send(PKT_CMD, bytes([CMD_SET_FUNCTION, FUNC_REMOTE_CONTROL]))
+            self.enabled = True
+        else:
+            self.link.send(PKT_CMD, bytes([CMD_SET_FUNCTION, FUNC_STANDBY]))
+            self.enabled = False
+            self.cmd_v = self.cmd_w = 0.0
+
+    def _clear_estop(self) -> None:
+        # PKT_RESET with 0x00 clears all E-STOP sources (0x01 would soft-reset).
+        self.link.send(PKT_RESET, bytes([0x00]))
 
     # ──────────────── Joystick ──────────────────────────────────────────────
 
@@ -549,20 +633,23 @@ class MainWindow(QMainWindow):
 
     def _poll(self) -> None:
         for frame in self.link.poll():
-            if frame.type == PKT_TUNE_TELEM and len(frame.payload) == TELEM_STRUCT.size:
-                self._on_telem(frame.payload)
+            if frame.type == PKT_TLM_DRIVE and len(frame.payload) >= DRIVE_STRUCT.size:
+                self._on_drive(frame.payload)
+            elif frame.type == PKT_TLM_CORE and len(frame.payload) >= CORE_MIN_LEN:
+                self._on_core(frame.payload)
+            # ACK/NACK and other streams are ignored.
         self._redraw()
 
         # Connection status: detect drops the poll caused
         if not self.link.is_open() and self.conn_btn.text() == 'Disconnect':
             self._set_status(False, 'link closed')
 
-        # Telemetry rate display
+        # Drive-stream rate display
         now = time.monotonic()
         elapsed = now - self.telem_count_t0
         if elapsed >= 1.0:
             hz = self.telem_count / elapsed
-            self.rate_lbl.setText(f'Telem: {hz:.0f} Hz')
+            self.rate_lbl.setText(f'Drive: {hz:.0f} Hz')
             self.telem_count = 0
             self.telem_count_t0 = now
 
@@ -570,41 +657,42 @@ class MainWindow(QMainWindow):
         if not self.link.is_open():
             return
         if self.joy_chk.isChecked():
-            v, w = self._joy_vw()
-            v_L = v - (WHEEL_BASE_M / 2.0) * w
-            v_R = v + (WHEEL_BASE_M / 2.0) * w
-            self.link.send(PKT_TUNE_CMD, bytes([TCMD_SET_TARGETS]) + struct.pack('<ff', v_L, v_R))
+            self.cmd_v, self.cmd_w = self._joy_vw()
+        if self.enabled:
+            # The velocity command doubles as proof-of-life for the watchdog.
+            self.link.send(PKT_CMD, bytes([CMD_VEL_CMD]) + struct.pack('<ff', self.cmd_v, self.cmd_w))
         else:
-            self.link.send(PKT_TUNE_CMD, bytes([TCMD_HEARTBEAT]))
+            self.link.send(PKT_HEARTBEAT)
 
     # ──────────────── Telemetry handling ────────────────────────────────────
 
-    def _on_telem(self, payload: bytes) -> None:
-        (ts_ms, enabled, _res, _pad,
-         vt_L, vm_L, e_L, i_L, d_L,
-         vt_R, vm_R, e_R, i_R, d_R,
-         _kpL, _kiL, _kdL, _kpR, _kiR, _kdR) = TELEM_STRUCT.unpack(payload)
+    def _on_drive(self, payload: bytes) -> None:
+        (vt_L, vt_R, vm_L, vm_R, d_L, d_R, _enc_L, _enc_R) = DRIVE_STRUCT.unpack(payload[:DRIVE_STRUCT.size])
 
-        # Firmware timestamp is monotonic ms since boot; reset our t0 the first
-        # frame so the x-axis starts at 0 each session.
-        if self.last_telem_t == 0.0:
-            self.t0 = time.monotonic() - ts_ms / 1000.0
-        self.last_telem_t = ts_ms / 1000.0
-        t = ts_ms / 1000.0
+        # TLM_DRIVE carries no timestamp; use PC arrival time since connect.
+        t = time.monotonic() - self.t0
         self.telem_count += 1
 
         self.t_buf.append(t)
         self.vt_L.append(vt_L); self.vm_L.append(vm_L)
         self.vt_R.append(vt_R); self.vm_R.append(vm_R)
-        self.e_L.append(e_L);   self.e_R.append(e_R)
-        self.i_L.append(i_L);   self.i_R.append(i_R)
-        self.d_L.append(d_L);   self.d_R.append(d_R)
+        self.e_L.append(vt_L - vm_L); self.e_R.append(vt_R - vm_R)
+        self.d_L.append(d_L); self.d_R.append(d_R)
 
-        if enabled:
-            self.enabled_lbl.setText('Motors: ON')
+    def _on_core(self, payload: bytes) -> None:
+        # u32 ts, u8 mode, u8 func, u16 estop, ...
+        mode      = payload[4]
+        function  = payload[5]
+        estop     = payload[6] | (payload[7] << 8)
+        if estop:
+            self.enabled_lbl.setText('E-STOP active')
+            self.enabled_lbl.setStyleSheet('color: #b00; font-weight: bold;')
+        elif function == FUNC_REMOTE_CONTROL:
+            sup = 'SUPERVISED' if mode == MODE_SUPERVISED else 'UNSUPERVISED'
+            self.enabled_lbl.setText(f'Motors: REMOTE_CONTROL ({sup})')
             self.enabled_lbl.setStyleSheet('color: #0a0; font-weight: bold;')
         else:
-            self.enabled_lbl.setText('Motors: OFF')
+            self.enabled_lbl.setText('Motors: OFF (STANDBY)')
             self.enabled_lbl.setStyleSheet('color: #888;')
 
     def _redraw(self) -> None:
@@ -617,16 +705,14 @@ class MainWindow(QMainWindow):
         self.c_vm_R.setData(t, list(self.vm_R))
         self.c_e_L.setData(t, list(self.e_L))
         self.c_e_R.setData(t, list(self.e_R))
-        self.c_i_L.setData(t, list(self.i_L))
-        self.c_i_R.setData(t, list(self.i_R))
         self.c_d_L.setData(t, list(self.d_L))
         self.c_d_R.setData(t, list(self.d_R))
 
     # ──────────────── Shutdown ──────────────────────────────────────────────
 
     def closeEvent(self, e):
-        # Best-effort: tell the firmware to disable on graceful exit. If the
-        # link is already dead the firmware's watchdog will catch it anyway.
+        # Best-effort: drop to STANDBY on graceful exit. If the link is already
+        # dead the firmware's heartbeat watchdog will stop the motors anyway.
         try:
             self._send_enable(False)
         except Exception:
@@ -637,7 +723,8 @@ class MainWindow(QMainWindow):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--port', default='/dev/ttyACM0', help='serial port (default: /dev/ttyACM0)')
+    ap.add_argument('--port', default='/dev/ttyACM0',
+                    help='serial port (default: /dev/ttyACM0; udev may expose /dev/ESP)')
     ap.add_argument('--baud', type=int, default=921600)
     args = ap.parse_args()
 

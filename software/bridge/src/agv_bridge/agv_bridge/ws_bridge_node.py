@@ -142,6 +142,7 @@ class WsBridgeNode(Node):
             odom_x=msg.odom_x, odom_y=msg.odom_y, odom_theta=msg.odom_theta,
             current_left_ma=msg.current_left_ma, current_right_ma=msg.current_right_ma,
             proximity_obstructed=msg.proximity_obstructed, led_mode=msg.led_mode,
+            led_indicator_cfg=msg.led_indicator_cfg,
         )
         self._broadcast(proto.PKT_TLM_CORE, c.to_bytes())
 
@@ -158,10 +159,11 @@ class WsBridgeNode(Node):
     def _on_sensors(self, msg: TlmSensors) -> None:
         s = proto.TlmSensors(
             load_cells=tuple(msg.load_cells),
-            imu_yaw_deg=msg.imu_yaw_deg, imu_pitch_deg=msg.imu_pitch_deg,
-            imu_roll_deg=msg.imu_roll_deg, imu_calib=msg.imu_calib,
+            imu_gyro_bias_dps=msg.imu_gyro_bias_dps, imu_pitch_deg=msg.imu_pitch_deg,
+            imu_roll_deg=msg.imu_roll_deg, imu_status=msg.imu_status,
             tof_mm=tuple(msg.tof_mm),
             batt_3s_mv=msg.batt_3s_mv, batt_6s_mv=msg.batt_6s_mv,
+            lidar_mm=tuple(msg.lidar_mm),
         )
         self._broadcast(proto.PKT_TLM_SENSORS, s.to_bytes())
 

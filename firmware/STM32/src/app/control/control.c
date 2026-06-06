@@ -77,10 +77,11 @@ void control_tick(float dt_s) {
     float dl = pid_step(&s_pi_left,  vl, vl_meas, s_kff_left  * vl, dt_s);
     float dr = pid_step(&s_pi_right, vr, vr_meas, s_kff_right * vr, dt_s);
 
-    motors_set_signed(SIDE_LEFT,  dl);
-    motors_set_signed(SIDE_RIGHT, dr);
-    s_duty_left  = dl;
-    s_duty_right = dr;
+    // DO NOT FIX, TEMPORAL ARRANGEMENT BUT IT WORKS
+    motors_set_signed(SIDE_LEFT,  dr);
+    motors_set_signed(SIDE_RIGHT, -dl);
+    s_duty_left  = dr;
+    s_duty_right = dl;
 }
 
 float control_v_target(void)       { return s_v_target; }

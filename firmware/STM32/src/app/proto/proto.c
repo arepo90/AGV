@@ -1,6 +1,7 @@
 #include "proto.h"
 #include "control.h"
 #include "crc.h"
+#include "lidar.h"
 #include "loadcells.h"
 #include "log.h"
 #include "mcu.h"
@@ -57,6 +58,10 @@ static float s_lkp = WHEEL_KP_LEFT,  s_lki = WHEEL_KI_LEFT;
 static float s_rkp = WHEEL_KP_RIGHT, s_rki = WHEEL_KI_RIGHT;
 static float s_line_kp = LINE_FOLLOW_KP, s_line_ki = LINE_FOLLOW_KI, s_line_kd = LINE_FOLLOW_KD;
 
+/* Mirror the indicator-ring config byte so the two GUI toggles (base, spread mode)
+ * each flip their own bit while leaving the other untouched. */
+static uint8_t s_indicator_cfg = LED_INDICATOR_CFG_DEFAULT;
+
 static bool param_apply_one(uint8_t id, float v) {
     /* HX711 corner-indexed params: corner = id - base. */
     if (id >= PARAM_HX711_OFFSET_BASE && id < PARAM_HX711_OFFSET_BASE + HX711_NUM_CORNERS) {
@@ -99,12 +104,25 @@ static bool param_apply_one(uint8_t id, float v) {
     case PARAM_RAMP_TAU_ANG:      ramp_set_tau_ang(v); break;
 
     case PARAM_LED_MODE:          telemetry_set_led_mode((uint8_t)v); break;
+    case PARAM_LED_BASE:
+        if (v != 0.0f) s_indicator_cfg |=  (uint8_t)(1u << LED_IND_BASE_BIT);
+        else           s_indicator_cfg &= (uint8_t)~(1u << LED_IND_BASE_BIT);
+        telemetry_set_indicator_cfg(s_indicator_cfg);
+        break;
+    case PARAM_LED_INDICATOR_MODE:
+        if (v != 0.0f) s_indicator_cfg |=  (uint8_t)(1u << LED_IND_MODE_BIT);
+        else           s_indicator_cfg &= (uint8_t)~(1u << LED_IND_MODE_BIT);
+        telemetry_set_indicator_cfg(s_indicator_cfg);
+        break;
 
     case PARAM_TOF_CAUTION_MM:     safety_set_tof_caution_mm(v);     break;
     case PARAM_TOF_CRITICAL_MM:    safety_set_tof_critical_mm(v);    break;
     case PARAM_TOF_ESTOP_MM:       safety_set_tof_estop_mm(v);       break;
     case PARAM_BATT_3S_CAUTION_MV: safety_set_battery_caution_mv(v); break;
     case PARAM_BATT_3S_ESTOP_MV:   safety_set_battery_estop_mv(v);   break;
+    case PARAM_LIDAR_CAUTION_MM:   safety_set_lidar_caution_mm(v);   break;
+    case PARAM_LIDAR_CRITICAL_MM:  safety_set_lidar_critical_mm(v);  break;
+    case PARAM_LIDAR_ESTOP_MM:     safety_set_lidar_estop_mm(v);     break;
 
     /* Recognised on the wire but no runtime setter yet — dropped on purpose. */
     case PARAM_MAX_LINEAR_SPEED:
@@ -292,6 +310,18 @@ static void dispatch(uint8_t type, uint8_t seq, const uint8_t *payload, uint8_t 
         if (param_apply_payload(payload, len) == 0) send_ack(seq, 0);
         else                                        send_nack(seq, NACK_UNKNOWN_PARAM);
         return;
+
+    case PKT_LIDAR_SEGMENTS: {
+        /* Jetson-segmented LaserScan distances, LE u16 mm each. Fire-and-forget
+         * (no ACK), like cmd_vel. Assemble byte-wise: M0 faults on unaligned u16. */
+        uint16_t seg[LIDAR_MAX_SEGMENTS];
+        uint8_t n = (uint8_t)(len / 2u);
+        if (n > LIDAR_MAX_SEGMENTS) n = LIDAR_MAX_SEGMENTS;
+        for (uint8_t i = 0; i < n; i++)
+            seg[i] = (uint16_t)(payload[2u * i] | ((uint16_t)payload[2u * i + 1u] << 8));
+        lidar_set_segments(seg, n);
+        return;
+    }
 
     case PKT_RESET: {
         uint8_t mode = (len > 0) ? payload[0] : 0u;

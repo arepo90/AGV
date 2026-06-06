@@ -1,11 +1,11 @@
 
 // ── AGV Wire Protocol (matches firmware exactly) ────────────────────────────
-// Frame: 0xAA 0x56 VER(0x02) SEQ TYPE LEN PAYLOAD[0..255] CRC16-CCITT(2)
+// Frame: 0xAA 0x56 VER(0x03) SEQ TYPE LEN PAYLOAD[0..255] CRC16-CCITT(2)
 // CRC covers: [VER, SEQ, TYPE, LEN, PAYLOAD...]
 // v2: telemetry is four rate-grouped streams (CORE/DRIVE/SENSORS/QTR).
 
 const AGV_PROTO = {
-  MAGIC0: 0xAA, MAGIC1: 0x56, VERSION: 0x02,
+  MAGIC0: 0xAA, MAGIC1: 0x56, VERSION: 0x03,
 
   // Packet types
   PKT: {
@@ -73,11 +73,16 @@ const AGV_PROTO = {
     RAMP_TAU_LIN:         0x43,
     RAMP_TAU_ANG:         0x44,
     LED_MODE:             0x50,   // indicator-ring animation (see LED_MODE enum)
+    LED_BASE:             0x51,   // reactive ring base: 0=off, 1=white
+    LED_INDICATOR_MODE:   0x52,   // reactive ring spread: 0=fixed, 1=responsive
     TOF_CAUTION_MM:       0x60,   // VL53L0X distance bands (mm)
     TOF_CRITICAL_MM:      0x61,
     TOF_ESTOP_MM:         0x62,
     BATT_3S_CAUTION_MV:   0x63,   // 3S low-voltage thresholds (mV)
     BATT_3S_ESTOP_MV:     0x64,
+    LIDAR_CAUTION_MM:     0x65,   // LiDAR distance bands (mm)
+    LIDAR_CRITICAL_MM:    0x66,
+    LIDAR_ESTOP_MM:       0x67,
   },
 
   // Ramp shape enum (matches ramp.h)
@@ -85,6 +90,9 @@ const AGV_PROTO = {
 
   // Indicator-ring animation enum (matches firmware LED_MODE_*)
   LED_MODE: { PULSE: 0, SNAKE: 1 },
+  // Reactive-ring config enums (matches firmware LED_IND_*_BIT in led_indicator_cfg)
+  LED_BASE: { OFF: 0, WHITE: 1 },
+  LED_INDICATOR_MODE: { FIXED: 0, RESPONSIVE: 1 },
 
   // Mode & function IDs (match firmware enums)
   MODE: { SUPERVISED: 0x00, UNSUPERVISED: 0x01 },
@@ -509,7 +517,7 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
 // object whose shape matches createMockTelemetry() so the tabs need no changes.
 //   CORE    (0x03): state, caution, chassis v/ω, pose, currents, proximity, flags
 //   DRIVE   (0x09): per-wheel target/measured velocity, duty, encoder counts
-//   SENSORS (0x0A): load cells, IMU orientation + calibration
+//   SENSORS (0x0A): load cells, IMU gyro-bias + tilt + status, TOF, battery, LiDAR
 //   QTR     (0x0B): 8 raw reflectance values + firmware line position
 const WHEEL_RADIUS_M = 0.10;
 const WHEEL_BASE_M   = 0.20;
@@ -524,10 +532,11 @@ function makeEmptyTelem() {
     position: { x: 0, y: 0, theta: 0 },
     encoders: { left: 0, right: 0, leftRpm: 0, rightRpm: 0 },
     loadCells: { fl: 0, fr: 0, rl: 0, rr: 0, total: 0, cog: { x: 0, y: 0 } },
-    imu: { yaw: 0, pitch: 0, roll: 0, ax: 0, ay: 0, az: 9.81,
-           calib_sys: 0, calib_gyro: 0, calib_accel: 0, calib_mag: 0 },
+    imu: { gyroBias: 0, pitch: 0, roll: 0,
+           present: false, hasData: false, biasConverged: false, zuptActive: false },
     proximity: { front: false, rear: false, left: false, right: false },
     tof: { front: 0, rear: 0, left: 0, right: 0 },   // mm
+    lidar: [],                                       // segmented LaserScan distances (mm)
     battery: { v3s: 0, v6s: 0, pct3s: null, pct6s: null },
     current: { left: 0, right: 0 },
     qtr: [0,0,0,0,0,0,0,0],
@@ -536,6 +545,7 @@ function makeEmptyTelem() {
     flags: { adc_data: false, hx711_data: false, imu_data: false, tare_in_progress: false },
     log: { pending: 0, dropped: 0 },
     ledMode: 0,
+    ledIndicatorCfg: 0,    // bit0 base (0=off,1=white), bit1 spread (0=fixed,1=responsive)
   };
 }
 
@@ -555,6 +565,7 @@ function _estopSourceLabels(mask) {
   if (mask & 0x40) out.push('Firmware fault');
   if (mask & 0x80) out.push('TOF obstacle');
   if (mask & 0x100) out.push('Battery low (3S)');
+  if (mask & 0x200) out.push('LiDAR obstacle');
   return out;
 }
 
@@ -579,10 +590,10 @@ function lipoPercent(packMv, cells) {
   return 100;
 }
 
-// PKT_TLM_CORE — 42 bytes (firmware telemetry.c send_core()).
+// PKT_TLM_CORE — 43 bytes (firmware telemetry.c send_core()).
 // estop/caution widened to u16 (offsets 6 & 8) — everything after shifts +2.
 function mergeCore(prev, payload) {
-  if (!payload || payload.length < 42) return prev;
+  if (!payload || payload.length < 43) return prev;
   const dv = _telemDataView(payload);
   const u8 = (o) => dv.getUint8(o), u16 = (o) => dv.getUint16(o, true);
   const u32 = (o) => dv.getUint32(o, true), f32 = (o) => dv.getFloat32(o, true);
@@ -600,6 +611,7 @@ function mergeCore(prev, payload) {
     mode: u8(4) === 0 ? 'SUPERVISED' : 'UNSUPERVISED',
     func: FUNC_NAMES[u8(5)] ?? 'STANDBY',
     ledMode: u8(41),
+    ledIndicatorCfg: u8(42),
     estop: { active: estopMask !== 0, virtual: estopMask !== 0,
              sources: _estopSourceLabels(estopMask), sourceMask: estopMask },
     caution: { modifier: cautMod, level: _cautionLevel(cautMod), sources: u16(8) },
@@ -635,8 +647,11 @@ function mergeDrive(prev, payload) {
   };
 }
 
-// PKT_TLM_SENSORS — 41 bytes (firmware telemetry.c send_sensors()).
-// After u8 calib at 28: u16 tof_mm[4] (29,31,33,35), u16 batt_3s_mv (37), u16 batt_6s_mv (39).
+// PKT_TLM_SENSORS — 41 fixed bytes + variable u16 LiDAR tail (firmware send_sensors()).
+// f32 gyro_bias_dps (16), pitch (20), roll (24); u8 imu_status (28); then
+// u16 tof_mm[4] (29,31,33,35), u16 batt_3s_mv (37), u16 batt_6s_mv (39),
+// then (len-41)/2 LiDAR segment distances (mm) from offset 41.
+// MPU6050: no magnetometer → no absolute yaw; fused heading is in CORE (odom θ).
 function mergeSensors(prev, payload) {
   if (!payload || payload.length < 41) return prev;
   const dv = _telemDataView(payload);
@@ -645,8 +660,10 @@ function mergeSensors(prev, payload) {
 
   const fl = f32(0), fr = f32(4), rl = f32(8), rr = f32(12);
   const total = fl + fr + rl + rr;
-  const calib = u8(28);
+  const status = u8(28);
   const v3s = u16(37), v6s = u16(39);
+  const nLidar = Math.floor((payload.length - 41) / 2);
+  const lidar = Array.from({ length: nLidar }, (_, i) => u16(41 + i * 2));
   return {
     ...prev,
     loadCells: {
@@ -658,11 +675,12 @@ function mergeSensors(prev, payload) {
     },
     imu: {
       ...prev.imu,
-      yaw: f32(16), pitch: f32(20), roll: f32(24),
-      calib_sys: (calib >> 6) & 0x3, calib_gyro:  (calib >> 4) & 0x3,
-      calib_accel: (calib >> 2) & 0x3, calib_mag: calib & 0x3,
+      gyroBias: f32(16), pitch: f32(20), roll: f32(24),
+      present: !!(status & 0x01), hasData: !!(status & 0x02),
+      biasConverged: !!(status & 0x04), zuptActive: !!(status & 0x08),
     },
     tof: { front: u16(29), rear: u16(31), left: u16(33), right: u16(35) },
+    lidar,
     battery: {
       v3s: v3s / 1000.0, v6s: v6s / 1000.0,
       pct3s: lipoPercent(v3s, 3), pct6s: lipoPercent(v6s, 6),

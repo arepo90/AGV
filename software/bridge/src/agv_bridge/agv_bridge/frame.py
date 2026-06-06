@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 MAGIC0 = 0xAA
 MAGIC1 = 0x56
-VERSION = 0x02   # v2: streamed telemetry (CORE/DRIVE/SENSORS/QTR)
+VERSION = 0x03   # v3: +led_indicator_cfg in CORE, lidar tail in SENSORS, PKT_LIDAR_SEGMENTS
 MAX_PAYLOAD = 255
 FRAME_OVERHEAD = 8
 MAX_FRAME = MAX_PAYLOAD + FRAME_OVERHEAD

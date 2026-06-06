@@ -1,5 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -7,7 +8,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     serial_port_arg = DeclareLaunchArgument(
         'serial_port',
-        default_value='/dev/ttyACM0',
+        default_value='/dev/ESP',
         description='UART device file the ESP32-C3 enumerates as. The 99-agv.rules '
                     'udev file creates this symlink; without it use '
                     '/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit-if00.',
@@ -29,13 +30,39 @@ def generate_launch_description():
         description='WebSocket path. GUI default expects /ws.',
     )
     uno_port_arg = DeclareLaunchArgument(
-        'uno_port', default_value='/dev/ttyUSB0',
+        'uno_port', default_value='/dev/UNO',
         description='Serial device for the Arduino UNO status panel. The '
                     '99-agv.rules udev file creates this symlink.',
     )
     panel_rate_arg = DeclareLaunchArgument(
         'panel_rate_hz', default_value='5.0',
         description='Status-panel refresh rate sent to the Arduino.',
+    )
+    lidar_fov_min_arg = DeclareLaunchArgument(
+        'lidar_fov_min_deg', default_value='-90.0',
+        description='LiDAR usable FOV start (maps to the "0°" LED indicator point).',
+    )
+    lidar_fov_max_arg = DeclareLaunchArgument(
+        'lidar_fov_max_deg', default_value='90.0',
+        description='LiDAR usable FOV end (maps to the "MAX_FOV°" LED indicator point).',
+    )
+    lidar_bin_arg = DeclareLaunchArgument(
+        'lidar_bin_deg', default_value='10.0',
+        description='LiDAR angular bin width Z° (average distance per interval).',
+    )
+    lidar_mask_min_arg = DeclareLaunchArgument(
+        'lidar_mask_min_deg', default_value='1.0',
+        description='LiDAR occluded-sector start X° (mask disabled while min > max).',
+    )
+    lidar_mask_max_arg = DeclareLaunchArgument(
+        'lidar_mask_max_deg', default_value='-1.0',
+        description='LiDAR occluded-sector end Y°.',
+    )
+    enable_lidar_arg = DeclareLaunchArgument(
+        'enable_lidar', default_value='false',
+        description='Start lidar_node. Off by default — the LiDAR is not connected yet. '
+                    'Re-enable with enable_lidar:=true (and set DISABLE_LIDAR=0 in the STM32 '
+                    'config.h so the firmware acts on the segments).',
     )
 
     uart_node = Node(
@@ -72,9 +99,26 @@ def generate_launch_description():
         }],
     )
 
+    lidar_node = Node(
+        package='agv_bridge',
+        executable='lidar_node',
+        name='lidar_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('enable_lidar')),
+        parameters=[{
+            'fov_min_deg': LaunchConfiguration('lidar_fov_min_deg'),
+            'fov_max_deg': LaunchConfiguration('lidar_fov_max_deg'),
+            'bin_deg': LaunchConfiguration('lidar_bin_deg'),
+            'mask_min_deg': LaunchConfiguration('lidar_mask_min_deg'),
+            'mask_max_deg': LaunchConfiguration('lidar_mask_max_deg'),
+        }],
+    )
+
     return LaunchDescription([
         serial_port_arg, baud_arg,
         ws_host_arg, ws_port_arg, ws_path_arg,
         uno_port_arg, panel_rate_arg,
-        uart_node, ws_node, panel_node,
+        lidar_fov_min_arg, lidar_fov_max_arg, lidar_bin_arg,
+        lidar_mask_min_arg, lidar_mask_max_arg, enable_lidar_arg,
+        uart_node, ws_node, panel_node, lidar_node,
     ])

@@ -15,6 +15,7 @@ PKT_CMD = 0x01
 PKT_PARAM_UPDATE = 0x02
 PKT_TLM_CORE = 0x03      # operational state + pose (fast)
 PKT_HEARTBEAT = 0x04
+PKT_LIDAR_SEGMENTS = 0x07  # WS/Jetson→STM32: segmented LaserScan distances (u16 mm[])
 PKT_ACK = 0x05
 PKT_NACK = 0x06
 PKT_LOG = 0x08
@@ -55,11 +56,12 @@ NACK_BUSY = 0x07
 
 # PKT_TLM_CORE: u32 ts, u8 mode, u8 func, u16 estop, u16 caution, f32 modifier,
 #               u8 flags, f32 v, f32 w, f32 x, f32 y, f32 theta,
-#               u16 cur_l, u16 cur_r, u16 proximity, u8 led_mode  → 42 bytes
+#               u16 cur_l, u16 cur_r, u16 proximity, u8 led_mode,
+#               u8 led_indicator_cfg  → 43 bytes
 # estop/caution widened to 16 bits to carry the TOF + battery sources.
-_CORE_FMT = '<IBBHHfBfffffHHHB'
+_CORE_FMT = '<IBBHHfBfffffHHHBB'
 TLM_CORE_LEN = struct.calcsize(_CORE_FMT)
-assert TLM_CORE_LEN == 42, TLM_CORE_LEN
+assert TLM_CORE_LEN == 43, TLM_CORE_LEN
 
 
 @dataclass
@@ -80,6 +82,7 @@ class TlmCore:
     current_right_ma: int
     proximity_obstructed: int
     led_mode: int
+    led_indicator_cfg: int
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> 'TlmCore':
@@ -95,7 +98,8 @@ class TlmCore:
                            self.velocity_linear, self.velocity_angular,
                            self.odom_x, self.odom_y, self.odom_theta,
                            self.current_left_ma, self.current_right_ma,
-                           self.proximity_obstructed, self.led_mode)
+                           self.proximity_obstructed, self.led_mode,
+                           self.led_indicator_cfg)
 
 
 # PKT_TLM_DRIVE: f32 vl_tgt, vr_tgt, vl_meas, vr_meas, duty_l, duty_r,
@@ -130,39 +134,64 @@ class TlmDrive:
                            self.encoder_left_counts, self.encoder_right_counts)
 
 
-# PKT_TLM_SENSORS: f32 load[4], f32 yaw, pitch, roll, u8 calib,
-#                  u16 tof_mm[4] (F,R,L,R), u16 batt_3s_mv, u16 batt_6s_mv  → 41 bytes
+# PKT_TLM_SENSORS: f32 load[4], f32 gyro_bias_dps, pitch, roll, u8 imu_status,
+#                  u16 tof_mm[4] (F,R,L,R), u16 batt_3s_mv, u16 batt_6s_mv  → 41 fixed bytes,
+#                  then a variable u16 LiDAR tail (one mm per angular interval; may be empty).
+# MPU6050 (6-DOF, no magnetometer): no absolute yaw — the fused heading is in
+# TLM_CORE (odom_theta). The former yaw slot now carries the heading-KF gyro-bias
+# estimate (deg/s), and the former BNO055 calib byte is now imu_status bits:
+#   bit0 present, bit1 has_data, bit2 bias_converged, bit3 zupt_active.
 _SENSORS_FMT = '<4f3fB4HHH'
 TLM_SENSORS_LEN = struct.calcsize(_SENSORS_FMT)
 assert TLM_SENSORS_LEN == 41, TLM_SENSORS_LEN
+
+IMU_STATUS_PRESENT        = 0x01
+IMU_STATUS_HAS_DATA       = 0x02
+IMU_STATUS_BIAS_CONVERGED = 0x04
+IMU_STATUS_ZUPT_ACTIVE    = 0x08
 
 
 @dataclass
 class TlmSensors:
     load_cells: Tuple[float, float, float, float]
-    imu_yaw_deg: float
+    imu_gyro_bias_dps: float
     imu_pitch_deg: float
     imu_roll_deg: float
-    imu_calib: int
+    imu_status: int
     tof_mm: Tuple[int, int, int, int]
     batt_3s_mv: int
     batt_6s_mv: int
+    lidar_mm: Tuple[int, ...] = ()
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> 'TlmSensors':
         if len(payload) < TLM_SENSORS_LEN:
             raise ValueError(f'sensors payload {len(payload)} < {TLM_SENSORS_LEN}')
-        (lc0, lc1, lc2, lc3, y, p, r, calib,
+        (lc0, lc1, lc2, lc3, bias, p, r, status,
          t0, t1, t2, t3, b3, b6) = struct.unpack(_SENSORS_FMT, payload[:TLM_SENSORS_LEN])
+        tail = payload[TLM_SENSORS_LEN:]
+        n = len(tail) // 2
+        lidar = struct.unpack(f'<{n}H', tail[:n * 2]) if n else ()
         return cls(load_cells=(lc0, lc1, lc2, lc3),
-                   imu_yaw_deg=y, imu_pitch_deg=p, imu_roll_deg=r, imu_calib=calib,
-                   tof_mm=(t0, t1, t2, t3), batt_3s_mv=b3, batt_6s_mv=b6)
+                   imu_gyro_bias_dps=bias, imu_pitch_deg=p, imu_roll_deg=r,
+                   imu_status=status,
+                   tof_mm=(t0, t1, t2, t3), batt_3s_mv=b3, batt_6s_mv=b6,
+                   lidar_mm=tuple(lidar))
 
     def to_bytes(self) -> bytes:
-        return struct.pack(_SENSORS_FMT, *self.load_cells,
-                           self.imu_yaw_deg, self.imu_pitch_deg, self.imu_roll_deg,
-                           self.imu_calib, *self.tof_mm,
-                           self.batt_3s_mv, self.batt_6s_mv)
+        fixed = struct.pack(_SENSORS_FMT, *self.load_cells,
+                            self.imu_gyro_bias_dps, self.imu_pitch_deg, self.imu_roll_deg,
+                            self.imu_status, *self.tof_mm,
+                            self.batt_3s_mv, self.batt_6s_mv)
+        tail = struct.pack(f'<{len(self.lidar_mm)}H', *self.lidar_mm)
+        return fixed + tail
+
+
+def pack_lidar_segments(mm) -> bytes:
+    """Pack LiDAR segment distances (mm) into the PKT_LIDAR_SEGMENTS payload:
+    little-endian u16 per segment, clamped to the u16 range."""
+    vals = [max(0, min(0xFFFF, int(round(v)))) for v in mm]
+    return struct.pack(f'<{len(vals)}H', *vals)
 
 
 # PKT_TLM_QTR: u16 raw[8], f32 line_position  → 20 bytes

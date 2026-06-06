@@ -5,15 +5,26 @@
 #include <stdbool.h>
 
 /* =============================================================================
- *  BNO055 9-DOF IMU driver over hal/i2c (NDOF fusion mode).  (app tier)
+ *  MPU6050 6-DOF IMU driver over hal/i2c (raw gyro + accel).  (app tier)
  *
- *  Polls Euler angles + Z gyro + calibration status at IMU_READ_HZ. Heading
- *  (yaw) and gyro rate feed the complementary heading filter in odometry.c;
- *  pitch/roll are diagnostic only. If setup fails, imu_present() stays false
- *  and the fusion code falls back to encoder-only heading.
+ *  The MPU6050 has NO magnetometer, so there is no absolute heading reference —
+ *  by design, since the IMU lives inside a closed metal enclosure next to two
+ *  brushed DC motors where a magnetometer would be useless anyway. This driver
+ *  therefore exposes only what the 6-DOF sensor can honestly measure:
  *
- *  yaw_rad / gyro_z are returned in the encoder math convention (CCW-positive)
- *  via IMU_HEADING_SIGN, so consumers never juggle the BNO055 orientation.
+ *    - gyro Z rate (rad/s)  → the heading source for odometry's heading+bias
+ *                             Kalman filter (slip-immune; its slowly-drifting
+ *                             bias is estimated there, not here).
+ *    - pitch / roll (deg)   → accel+gyro complementary tilt, gravity-referenced
+ *                             and absolute; diagnostic only (flat-floor AGV).
+ *    - is_still             → accel ≈ g and gyro small; used to gate the ZUPT
+ *                             (zero-velocity) bias update in odometry.
+ *
+ *  No yaw is reported: yaw is owned by the fused estimate in odometry (theta).
+ *  gyro_z is returned in the encoder math convention (CCW-positive) via
+ *  IMU_HEADING_SIGN, so consumers never juggle the chip's axis orientation.
+ *  If setup fails, imu_present() stays false and odometry falls back to
+ *  encoder-only heading.
  * =============================================================================
  */
 
@@ -22,16 +33,10 @@ void    imu_tick(uint32_t now_ms);
 
 bool    imu_present(void);        /* setup succeeded */
 bool    imu_has_data(void);       /* at least one good read */
+bool    imu_is_still(void);       /* accel ≈ 1 g and |gyro| small → likely at rest */
 
-float   imu_yaw_deg(void);
-float   imu_pitch_deg(void);
+float   imu_gyro_z_radps(void);   /* latest raw Z rate, CCW-positive */
+float   imu_pitch_deg(void);      /* complementary tilt, board frame */
 float   imu_roll_deg(void);
-float   imu_yaw_rad(void);        /* wrapped [-π, +π], CCW-positive */
-float   imu_gyro_z_radps(void);   /* CCW-positive */
-
-uint8_t imu_calib_sys(void);
-uint8_t imu_calib_gyro(void);
-uint8_t imu_calib_accel(void);
-uint8_t imu_calib_mag(void);
 
 #endif /* IMU_H */

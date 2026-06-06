@@ -1,23 +1,26 @@
-"""Panel node — drives the Arduino UNO + 3.5" TFT status display.
+"""Panel node — drives the Arduino UNO + 3.5" TFT status display ("Amber
+Industrial" face). One-way, display-only.
 
-A display-only, one-way feed: this node subscribes to the telemetry topics the
-uart_bridge already publishes (/agv/core, /agv/sensors), derives battery
-percentage from the raw pack voltages, and writes a compact, checksummed ASCII
-line to the Arduino's USB serial port at a few Hz. The Arduino renders mode,
-function, E-STOP/caution state, and battery charge.
+Subscribes to /agv/core + /agv/sensors, derives battery %, and writes a compact
+checksummed ASCII line to the UNO at a few Hz. This version EXTENDS the original
+line with the data the new panel face needs: IR proximity, per-corner cargo
+load, and a short human-readable reason string decoded from the E-STOP/caution
+source masks (so the panel can say *why* it stopped without bit-decoding on the
+AVR).
 
-Line format (newline-terminated), parsed field-by-field on the UNO:
+Line format (newline-terminated):
 
-    AGV,<mode>,<func>,<estop>,<caution>,<cm_x100>,<b3_mv>,<p3>,<b6_mv>,<p6>,<t0>,<t1>,<t2>,<t3>*<csum>\\n
+  AGV,<mode>,<func>,<estop>,<caution>,<cm>,<b3>,<p3>,<b6>,<p6>,
+      <t0>,<t1>,<t2>,<t3>,<ir>,<c0>,<c1>,<c2>,<c3>,<reason>*<csum>
 
-  * estop/caution are 16-bit source bitmasks (0 = clear).
-  * cm_x100 is the caution modifier ×100 (0..100).
-  * b3/b6 are pack millivolts (0 = absent); p3/p6 are 0..100 % (-1 = absent).
-  * t0..t3 are TOF ranges in mm (Front, Rear, Left, Right).
-  * csum is the 8-bit XOR of every character between 'A' and '*', as two hex digits.
-
-The UNO resets when the port opens (DTR), so the node tolerates open/write errors
-and lazily reopens — the sketch re-initialises and the stream resumes.
+  * estop/caution: 16-bit source bitmasks (0 = clear).
+  * cm: caution modifier x100 (0..100) = speed cap %.
+  * bN: pack mV (0 = absent); pN: 0..100 % (-1 = absent).
+  * t0..t3: corner TOF mm  (FL, FR, RL, RR  — corner-mounted, looking outward).
+  * ir: IR-proximity bitmask (bit0 FL, bit1 FR, bit2 RL, bit3 RR).
+  * c0..c3: corner load deci-kg (kg x10, FL, FR, RL, RR).
+  * reason: short text, NO comma / '*' (e.g. "TOF FL CLOSE", "CARGO IMBAL").
+  * csum: 8-bit XOR of every char between 'A' and '*', two hex digits.
 """
 
 from __future__ import annotations
@@ -30,17 +33,52 @@ import serial
 from agv_msgs.msg import TlmCore, TlmSensors
 
 
-# LiPo per-cell open-circuit voltage → state-of-charge (%), piecewise-linear.
-# Approximate and shared in spirit with the GUI; good enough for a panel gauge.
+# LiPo per-cell open-circuit voltage -> state-of-charge (%), piecewise-linear.
 _LIPO_CURVE = [
     (3.20, 0.0), (3.30, 5.0), (3.40, 10.0), (3.50, 20.0), (3.60, 35.0),
     (3.70, 50.0), (3.80, 60.0), (3.90, 70.0), (4.00, 80.0), (4.10, 90.0),
     (4.20, 100.0),
 ]
 
+# ---- source-mask -> short reason text -------------------------------------
+# Bit positions: TOF (estop bit7 / caution bit5) and BATTERY (estop bit8 /
+# caution bit6) are fixed by architecture.md. The remaining sources share the
+# low bits; fill these in from your config.h enum if the order differs. Order
+# matters: the FIRST set bit found wins (highest priority first).
+_ESTOP_BITS = [
+    (8, "BATTERY LOW"),
+    (7, "TOF CLOSE"),
+    (0, "OBSTACLE IR"),     # <- confirm bit vs config.h
+    (1, "CARGO OVERLOAD"),  # <- confirm
+    (2, "CARGO IMBAL"),     # <- confirm
+    (3, "OVERCURRENT"),     # <- confirm
+    (4, "HEARTBEAT"),       # <- confirm
+    (5, "WORKSTATION"),     # <- confirm
+    (6, "FIRMWARE FAULT"),  # <- confirm
+]
+_CAUTION_BITS = [
+    (6, "BATTERY LOW"),
+    (5, "TOF MID"),
+    (0, "CARGO IMBAL"),     # <- confirm
+    (1, "UNSUPERVISED"),    # <- confirm
+]
+
+
+def _reason(estop: int, caution: int) -> str:
+    if estop:
+        for bit, name in _ESTOP_BITS:
+            if estop & (1 << bit):
+                return name
+        return "E-STOP"
+    if caution:
+        for bit, name in _CAUTION_BITS:
+            if caution & (1 << bit):
+                return name
+        return "CAUTION"
+    return "ALL SYSTEMS CLEAR"
+
 
 def _lipo_percent(pack_mv: int, cells: int) -> int:
-    """State-of-charge for a pack of `cells` series cells. -1 if absent."""
     if pack_mv <= 0 or cells <= 0:
         return -1
     v = (pack_mv / 1000.0) / cells
@@ -70,11 +108,14 @@ class PanelNode(Node):
         self.declare_parameter('rate_hz', 5.0)
         self.declare_parameter('cells_3s', 3)
         self.declare_parameter('cells_6s', 6)
+        # IR proximity bits inside TlmCore.proximity_obstructed (PC6..PC9 -> FL,FR,RL,RR)
+        self.declare_parameter('ir_shift', 6)
 
         self._port = self.get_parameter('uno_port').value
         self._baud = int(self.get_parameter('uno_baud').value)
         self._cells_3s = int(self.get_parameter('cells_3s').value)
         self._cells_6s = int(self.get_parameter('cells_6s').value)
+        self._ir_shift = int(self.get_parameter('ir_shift').value)
         rate = float(self.get_parameter('rate_hz').value)
 
         self._ser: serial.Serial | None = None
@@ -85,7 +126,7 @@ class PanelNode(Node):
         self.create_subscription(TlmSensors, '/agv/sensors', self._on_sensors, 10)
         self.create_timer(1.0 / max(rate, 0.5), self._tick)
 
-        self.get_logger().info(f'panel_node → {self._port} @ {self._baud} ({rate:.1f} Hz)')
+        self.get_logger().info(f'panel_node -> {self._port} @ {self._baud} ({rate:.1f} Hz)')
 
     def _on_core(self, msg: TlmCore) -> None:
         self._core = msg
@@ -97,7 +138,6 @@ class PanelNode(Node):
         if self._ser is not None and self._ser.is_open:
             return True
         try:
-            # write_timeout keeps a stalled/unplugged UNO from blocking the node.
             self._ser = serial.Serial(self._port, self._baud, timeout=0, write_timeout=0.2)
             self.get_logger().info(f'opened {self._port}')
             return True
@@ -114,14 +154,22 @@ class PanelNode(Node):
 
         b3 = s.batt_3s_mv if s else 0
         b6 = s.batt_6s_mv if s else 0
-        tof = list(s.tof_mm) if s else [0, 0, 0, 0]
+        tof = list(s.tof_mm) if s else [0, 0, 0, 0]          # FL, FR, RL, RR (corners)
+        load = list(s.load_cells) if s else [0.0, 0.0, 0.0, 0.0]  # FL, FR, RL, RR kg
         p3 = _lipo_percent(b3, self._cells_3s)
         p6 = _lipo_percent(b6, self._cells_6s)
         cm = int(round(max(0.0, min(1.0, c.caution_modifier)) * 100))
 
+        # IR proximity: pull the 4 corner bits out of proximity_obstructed.
+        ir = (int(c.proximity_obstructed) >> self._ir_shift) & 0x0F
+        # cargo corners as deci-kg ints
+        cg = [int(round(max(0.0, v) * 10)) for v in load[:4]]
+        reason = _reason(int(c.estop_sources), int(c.caution_sources))
+
         body = (f'AGV,{c.mode},{c.function},{c.estop_sources},{c.caution_sources},'
                 f'{cm},{b3},{p3},{b6},{p6},'
-                f'{tof[0]},{tof[1]},{tof[2]},{tof[3]}')
+                f'{tof[0]},{tof[1]},{tof[2]},{tof[3]},{ir},'
+                f'{cg[0]},{cg[1]},{cg[2]},{cg[3]},{reason}')
         line = f'{body}*{_checksum(body):02X}\n'
 
         if not self._ensure_open():

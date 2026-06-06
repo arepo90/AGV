@@ -15,8 +15,8 @@ function createMockTelemetry() {
     position: { x: 0.0, y: 0.0, theta: 0.0 },
     encoders: { left: 0, right: 0, leftRpm: 0, rightRpm: 0 },
     loadCells: { fl: 0, fr: 0, rl: 0, rr: 0, total: 0, cog: { x: 0, y: 0 } },
-    imu: { roll: 0, pitch: 0, yaw: 0,
-           calib_sys: 0, calib_gyro: 0, calib_accel: 0, calib_mag: 0 },
+    imu: { roll: 0, pitch: 0, gyroBias: 0,
+           present: false, hasData: false, biasConverged: false, zuptActive: false },
     proximity: { front: false, rear: false, left: false, right: false },
     tof: { front: 1200, rear: 1200, left: 1200, right: 1200 },   // mm; ≥1200 = clear
     battery: { v3s: 12.4, v6s: 24.8, pct3s: 93, pct6s: 93 },
@@ -27,6 +27,8 @@ function createMockTelemetry() {
     flags: { adc_data: false, hx711_data: false, imu_data: false, tare_in_progress: false },
     log: { pending: 0, dropped: 0 },
     ledMode: 0,
+    ledIndicatorCfg: 0,
+    lidar: [],
     comms: { connected: false, latency: 0, rxPackets: 0, txPackets: 0, drops: 0 },
     uptime: 0,
   };
@@ -53,6 +55,8 @@ function useTelemetry(connected) {
       motors: t.motors,
       log: t.log,
       ledMode: t.ledMode,
+      ledIndicatorCfg: t.ledIndicatorCfg,
+      lidar: t.lidar,
       uptime: (t.timestamp_ms ?? 0) / 1000.0,
       comms: { ...prev.comms, connected: true, rxPackets: prev.comms.rxPackets + 1 },
     }));

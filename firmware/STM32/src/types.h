@@ -53,6 +53,7 @@ typedef enum {
     CAUTION_SRC_WORKSTATION_FORCED = (1u << 4),
     CAUTION_SRC_TOF_NEAR           = (1u << 5),  /* VL53L0X distance band */
     CAUTION_SRC_BATTERY_LOW        = (1u << 6),  /* 3S/6S sag */
+    CAUTION_SRC_LIDAR_NEAR         = (1u << 7),  /* Jetson-segmented LaserScan band */
 } caution_source_t;
 
 /* ---- Virtual E-STOP sources (bitmask) -------------------------------------
@@ -68,11 +69,13 @@ typedef enum {
     ESTOP_SRC_FIRMWARE_FAULT    = (1u << 6),  /* needs explicit clear */
     ESTOP_SRC_TOF               = (1u << 7),  /* VL53L0X close range; auto-clears */
     ESTOP_SRC_BATTERY_LOW       = (1u << 8),  /* 3S undervoltage; auto-clears (hysteresis) */
+    ESTOP_SRC_LIDAR             = (1u << 9),  /* LaserScan segment close range; auto-clears */
 } estop_source_t;
 
 #define ESTOP_AUTOCLEAR_MASK                                          \
     (ESTOP_SRC_PROXIMITY | ESTOP_SRC_CARGO_OVERLOAD |                 \
-     ESTOP_SRC_CARGO_IMBALANCE | ESTOP_SRC_TOF | ESTOP_SRC_BATTERY_LOW)
+     ESTOP_SRC_CARGO_IMBALANCE | ESTOP_SRC_TOF | ESTOP_SRC_BATTERY_LOW | \
+     ESTOP_SRC_LIDAR)
 
 /* ---- Fault log severity --------------------------------------------------- */
 typedef enum {
@@ -99,6 +102,7 @@ typedef enum {
     LOG_MOD_ODOMETRY  = 12u,
     LOG_MOD_TOF       = 13u,
     LOG_MOD_BATTERY   = 14u,
+    LOG_MOD_LIDAR     = 15u,
 } log_module_t;
 
 /* ---- Fault log codes (16-bit, namespaced loosely by module) --------------- */
@@ -178,6 +182,11 @@ typedef enum {
     LOG_CODE_BATTERY_RESTORED           = 0x0F02u,  /* 3S recovered above hysteresis */
     LOG_CODE_BATTERY_6S_LOW             = 0x0F03u,  /* 6S below warn (display rail; warn only) */
     LOG_CODE_BATTERY_I2C_FAIL           = 0x0F04u,  /* INA219 read failure (data = addr) */
+
+    /* LiDAR (Jetson-segmented LaserScan, pushed over PKT_LIDAR_SEGMENTS) */
+    LOG_CODE_LIDAR_TRIGGERED            = 0x1000u,  /* entered a caution/estop band (data = mm) */
+    LOG_CODE_LIDAR_CLEARED              = 0x1001u,  /* back to NORMAL */
+    LOG_CODE_LIDAR_STALE                = 0x1002u,  /* no segments within LIDAR_STALE_MS → treated clear */
 
     /* Persistent storage / parameters */
     LOG_CODE_QTR_CAL_BEGIN              = 0x0D00u,

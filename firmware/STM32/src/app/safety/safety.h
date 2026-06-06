@@ -64,4 +64,9 @@ void    safety_set_tof_estop_mm(float mm);
 void    safety_set_battery_caution_mv(float mv);
 void    safety_set_battery_estop_mv(float mv);
 
+/* ---- LiDAR distance bands (mm, runtime-tunable; same policy as TOF) -------- */
+void    safety_set_lidar_caution_mm(float mm);
+void    safety_set_lidar_critical_mm(float mm);
+void    safety_set_lidar_estop_mm(float mm);
+
 #endif /* SAFETY_H */

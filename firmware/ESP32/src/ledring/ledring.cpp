@@ -10,6 +10,10 @@ static const uint8_t  s_pins[LED_RING_COUNT] = LED_RING_PINS;
 static const uint16_t s_lens[LED_RING_COUNT] = LED_RING_LENS;
 static Adafruit_NeoPixel s_rings[LED_RING_COUNT];   /* configured in ledring_init */
 
+/* Big rings are 120 LEDs; the per-LED overlap buffers are sized to that. LEDs on
+ * a longer-than-expected ring beyond this index simply stay at the base colour. */
+static const uint16_t RING_MAXLEN = 120;
+
 /* ---- Tapped state ------------------------------------------------------- */
 enum class StackState { INIT, DISCONNECT, ESTOP, CAUTION, NORMAL };
 
@@ -20,9 +24,25 @@ static uint32_t s_last_telem_ms   = 0;
 static bool     s_seen_telemetry  = false;
 static uint32_t s_last_render_ms  = 0;
 
+/* Sensor state for the reactive ring (from the TLM_CORE + TLM_SENSORS taps). */
+static uint8_t  s_indicator_cfg = 0;
+static uint16_t s_prox_bits     = 0;
+static uint16_t s_tof_mm[4]     = { 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF };
+static uint16_t s_lidar_mm[LED_LIDAR_MAX_SEGMENTS];
+static uint8_t  s_lidar_n       = 0;
+
+/* Eased (smoothed) distances so 5 Hz telemetry renders fluidly at the frame rate. */
+static float    s_tof_ease[4];
+static float    s_lidar_ease[LED_LIDAR_MAX_SEGMENTS];
+
 struct Rgb { uint8_t r, g, b; };
 
-/* ---- Helpers ------------------------------------------------------------ */
+/* Indicator-point table (wiring-dependent; see config.h). */
+struct IndPoint { uint16_t led; uint8_t type; uint8_t sensor; };
+static const IndPoint s_points[]  = LED_IND_POINTS;
+static const uint8_t  s_num_points = (uint8_t)(sizeof(s_points) / sizeof(s_points[0]));
+
+/* ---- State-colour helpers (unchanged, used by the three non-reactive rings) -- */
 
 static StackState derive_state(uint32_t now_ms) {
     if (!s_seen_telemetry)                                       return StackState::INIT;
@@ -83,6 +103,119 @@ static uint8_t scale(uint8_t c, float level) {
     return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
 }
 
+/* ---- Reactive-ring helpers ---------------------------------------------- */
+
+/* Yellow→red gradient: full red at/below min_mm, yellow at max_mm. */
+static Rgb grad_color(float d, float min_mm, float max_mm) {
+    float t = (d - min_mm) / (max_mm - min_mm);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return { 255, (uint8_t)(255.0f * t + 0.5f), 0 };
+}
+
+/* Responsive TOF half-spread: NEAR (many LEDs) at min_mm → FAR (few) at max_mm. */
+static int tof_responsive_half(float d) {
+    float t = (d - (float)LED_TOF_MIN_MM) / (float)(LED_TOF_MAX_MM - LED_TOF_MIN_MM);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    float h = (float)LED_TOF_HALFSPREAD_NEAR +
+              t * ((float)LED_TOF_HALFSPREAD_FAR - (float)LED_TOF_HALFSPREAD_NEAR);
+    return (int)(h + 0.5f);
+}
+
+/* Paint a span centred on `center` (±half, wrapping) into the per-LED winners,
+ * keeping only the nearest (lowest-distance) contribution at each LED. */
+static void splat(uint16_t *best, Rgb *col, uint16_t n,
+                  uint16_t center, int half, uint16_t dist, Rgb c) {
+    for (int o = -half; o <= half; o++) {
+        int idx = ((int)center + o) % (int)n;
+        if (idx < 0) idx += (int)n;
+        if (dist < best[idx]) { best[idx] = dist; col[idx] = c; }
+    }
+}
+
+/* LED at the centre of LiDAR segment k of nseg, evenly spaced along the arc from
+ * LED_LIDAR_POINT_0 to LED_LIDAR_POINT_MAX (linear in index — pick endpoints on a
+ * span that does not cross the ring's 0 seam). */
+static uint16_t lidar_center_led(uint8_t k, uint8_t nseg, uint16_t n) {
+    float f = (nseg > 0) ? ((float)k + 0.5f) / (float)nseg : 0.5f;
+    float pos = (float)LED_LIDAR_POINT_0 +
+                ((float)LED_LIDAR_POINT_MAX - (float)LED_LIDAR_POINT_0) * f;
+    int idx = (int)(pos + 0.5f) % (int)n;
+    if (idx < 0) idx += (int)n;
+    return (uint16_t)idx;
+}
+
+/* Step every eased distance toward its latest target. Segments beyond the current
+ * count decay toward "clear" so a shrinking arc fades rather than snapping off. */
+static void ease_step(void) {
+    for (int i = 0; i < 4; i++)
+        s_tof_ease[i] += LED_IND_EASE_ALPHA * ((float)s_tof_mm[i] - s_tof_ease[i]);
+    for (int k = 0; k < (int)LED_LIDAR_MAX_SEGMENTS; k++) {
+        float tgt = (k < s_lidar_n) ? (float)s_lidar_mm[k] : (float)LED_LIDAR_MAX_MM;
+        s_lidar_ease[k] += LED_IND_EASE_ALPHA * (tgt - s_lidar_ease[k]);
+    }
+}
+
+static void render_indicator_ring(uint8_t r) {
+    uint16_t n = s_lens[r];
+    if (n > RING_MAXLEN) n = RING_MAXLEN;
+
+    const bool base_white = (s_indicator_cfg >> LED_IND_BASE_BIT) & 1u;
+    const bool responsive = (s_indicator_cfg >> LED_IND_MODE_BIT) & 1u;
+    const Rgb  base = base_white
+        ? Rgb{ (uint8_t)LED_BASE_WHITE_LEVEL, (uint8_t)LED_BASE_WHITE_LEVEL, (uint8_t)LED_BASE_WHITE_LEVEL }
+        : Rgb{ 0, 0, 0 };
+
+    static uint16_t best[RING_MAXLEN];
+    static Rgb      best_col[RING_MAXLEN];
+    for (uint16_t i = 0; i < n; i++) { best[i] = 0xFFFF; best_col[i] = base; }
+
+    /* Fixed indicator points (TOF + IR). */
+    for (uint8_t p = 0; p < s_num_points; p++) {
+        const IndPoint pt = s_points[p];
+        if (pt.led >= n) continue;
+
+        if (pt.type == IND_TYPE_IR) {
+            if (!((s_prox_bits >> pt.sensor) & 1u)) continue;     /* no detection → base */
+            splat(best, best_col, n, pt.led, LED_IR_HALFSPREAD, 0u, Rgb{ 255, 0, 0 });
+        } else { /* IND_TYPE_TOF */
+            float d = s_tof_ease[pt.sensor & 0x3];
+            if (d >= (float)LED_TOF_MAX_MM) continue;             /* too far → base */
+            int half = responsive ? tof_responsive_half(d) : LED_TOF_HALFSPREAD_FIXED;
+            uint16_t dist = (uint16_t)(d < 0.0f ? 0.0f : (d > 65535.0f ? 65535.0f : d));
+            splat(best, best_col, n, pt.led, half, dist,
+                  grad_color(d, (float)LED_TOF_MIN_MM, (float)LED_TOF_MAX_MM));
+        }
+    }
+
+    /* LiDAR arc: each fresh segment is a fixed-span gradient point. */
+    for (uint8_t k = 0; k < s_lidar_n; k++) {
+        float d = s_lidar_ease[k];
+        if (d >= (float)LED_LIDAR_MAX_MM) continue;
+        uint16_t dist = (uint16_t)(d < 0.0f ? 0.0f : (d > 65535.0f ? 65535.0f : d));
+        splat(best, best_col, n, lidar_center_led(k, s_lidar_n, n),
+              LED_LIDAR_HALFSPREAD, dist,
+              grad_color(d, (float)LED_LIDAR_MIN_MM, (float)LED_LIDAR_MAX_MM));
+    }
+
+    for (uint16_t i = 0; i < n; i++)
+        s_rings[r].setPixelColor(i, s_rings[r].Color(best_col[i].r, best_col[i].g, best_col[i].b));
+    s_rings[r].show();
+}
+
+static void render_state_ring(uint8_t r, uint32_t now_ms,
+                              Rgb col, bool snake, float pulse, float sPeriod) {
+    uint16_t n = s_lens[r];
+    for (uint16_t i = 0; i < n; i++) {
+        float lvl = snake ? snake_level(i, n, now_ms, sPeriod) : pulse;
+        s_rings[r].setPixelColor(i, s_rings[r].Color(scale(col.r, lvl),
+                                                     scale(col.g, lvl),
+                                                     scale(col.b, lvl)));
+    }
+    s_rings[r].show();
+}
+
 /* ---- API ---------------------------------------------------------------- */
 
 void ledring_init(void) {
@@ -95,38 +228,46 @@ void ledring_init(void) {
         s_rings[r].clear();
         s_rings[r].show();
     }
+    for (int i = 0; i < 4; i++) s_tof_ease[i] = (float)LED_TOF_MAX_MM;
+    for (int k = 0; k < (int)LED_LIDAR_MAX_SEGMENTS; k++) s_lidar_ease[k] = (float)LED_LIDAR_MAX_MM;
 }
 
 void ledring_update_from_telemetry(uint16_t estop_sources, uint16_t caution_sources,
-                                   uint8_t led_mode, uint32_t now_ms) {
+                                   uint8_t led_mode, uint8_t indicator_cfg,
+                                   uint16_t proximity_bits, uint32_t now_ms) {
     s_estop_sources   = estop_sources;
     s_caution_sources = caution_sources;
     s_mode            = led_mode;
+    s_indicator_cfg   = indicator_cfg;
+    s_prox_bits       = proximity_bits;
     s_last_telem_ms   = now_ms;
     s_seen_telemetry  = true;
+}
+
+void ledring_update_sensors(const uint16_t tof_mm[4],
+                            const uint16_t *lidar_mm, uint8_t lidar_n) {
+    for (int i = 0; i < 4; i++) s_tof_mm[i] = tof_mm[i];
+    if (lidar_n > LED_LIDAR_MAX_SEGMENTS) lidar_n = LED_LIDAR_MAX_SEGMENTS;
+    for (uint8_t k = 0; k < lidar_n; k++) s_lidar_mm[k] = lidar_mm[k];
+    s_lidar_n = lidar_n;
 }
 
 void ledring_tick(uint32_t now_ms) {
     if ((now_ms - s_last_render_ms) < (1000u / LED_RING_REFRESH_HZ)) return;
     s_last_render_ms = now_ms;
 
+    ease_step();
+
     StackState st = derive_state(now_ms);
     Rgb col = state_color(st);
     bool snake = (s_mode == LED_ANIM_SNAKE);
-    float pPeriod = pulse_period_s(st);
+    float pulse   = snake ? 0.0f : pulse_level(now_ms, pulse_period_s(st));
     float sPeriod = snake_period_s(st);
 
-    /* Pulse intensity is uniform across a ring — compute it once. */
-    float pulse = snake ? 0.0f : pulse_level(now_ms, pPeriod);
-
     for (uint8_t r = 0; r < LED_RING_COUNT; r++) {
-        uint16_t n = s_lens[r];
-        for (uint16_t i = 0; i < n; i++) {
-            float lvl = snake ? snake_level(i, n, now_ms, sPeriod) : pulse;
-            s_rings[r].setPixelColor(i, s_rings[r].Color(scale(col.r, lvl),
-                                                         scale(col.g, lvl),
-                                                         scale(col.b, lvl)));
-        }
-        s_rings[r].show();
+        if (LED_INDICATOR_RING < LED_RING_COUNT && r == (uint8_t)LED_INDICATOR_RING)
+            render_indicator_ring(r);
+        else
+            render_state_ring(r, now_ms, col, snake, pulse, sPeriod);
     }
 }

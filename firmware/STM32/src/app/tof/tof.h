@@ -8,7 +8,7 @@
  *  VL53L0X time-of-flight ranging, four sensors behind a TCA9548A I2C mux. (app)
  *
  *  All four VL53L0X keep their shared default address (0x29); the mux exposes
- *  exactly one channel at a time so they never collide. The BNO055 and the two
+ *  exactly one channel at a time so they never collide. The MPU6050 and the two
  *  INA219 sit upstream of the mux on the same bus and are unaffected.
  *
  *  Sensors run in continuous back-to-back ranging. tof_tick() services one

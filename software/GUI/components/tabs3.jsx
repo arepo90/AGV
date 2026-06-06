@@ -116,8 +116,8 @@ function GainSection({ title, paramNote, keys, theme, gains, setGain }) {
 function PIDTab({ theme, agv, connected, telem }) {
   // Defaults match config.h WHEEL_*/LINE_*/TRAJECTORY_* macros
   const [gains, setGains] = React.useState({
-    left_kp:  0.5,  left_ki:  2.0,  left_kff:  1.0,
-    right_kp: 0.5,  right_ki: 2.0,  right_kff: 1.0,
+    left_kp:  1,  left_ki:  0,  left_kff:  0,
+    right_kp: 1,  right_ki: 0,  right_kff: 0,
     line_kp:        1.0,  line_ki:        0.0,  line_kd:        0.0,
     line_cruise:    0.3,  traj_cruise:    0.3,  traj_lookahead: 0.50, traj_curv_slowdown: 0.50,
   });

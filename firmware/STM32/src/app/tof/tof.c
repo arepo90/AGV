@@ -78,7 +78,7 @@ static bool r16(uint8_t reg, uint16_t *val) {
     return true;
 }
 
-/* Expose exactly one mux downstream channel (BNO055/INA219 stay upstream). */
+/* Expose exactly one mux downstream channel (MPU6050/INA219 stay upstream). */
 static bool mux_select(uint8_t channel) {
     uint8_t mask = (uint8_t)(1u << channel);
     return i2c_write(TCA9548A_I2C_ADDR, &mask, 1);

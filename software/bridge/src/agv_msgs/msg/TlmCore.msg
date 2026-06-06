@@ -20,3 +20,4 @@ uint16 current_left_ma
 uint16 current_right_ma
 uint16 proximity_obstructed  # bits 6-9 = PC6-PC9 (Front/Rear/Left/Right)
 uint8 led_mode               # indicator-ring animation: 0=pulse, 1=snake
+uint8 led_indicator_cfg      # distance-reactive ring: bit0 base (0=off,1=white), bit1 spread (0=fixed,1=responsive)

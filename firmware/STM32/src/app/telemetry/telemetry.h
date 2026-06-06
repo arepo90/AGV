@@ -26,4 +26,8 @@ void telemetry_tick(uint32_t now_ms);
  * and reported in TLM_CORE so the ESP32 reads it from the telemetry tap. */
 void telemetry_set_led_mode(uint8_t mode);
 
+/* Distance-reactive ring config, packed (bit0 base off/white, bit1 fixed/responsive),
+ * set via PARAM_LED_BASE / PARAM_LED_INDICATOR_MODE and echoed in TLM_CORE. */
+void telemetry_set_indicator_cfg(uint8_t cfg);
+
 #endif /* TELEMETRY_H */

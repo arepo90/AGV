@@ -5,6 +5,7 @@
 #include "control.h"
 #include "encoders.h"
 #include "imu.h"
+#include "lidar.h"
 #include "loadcells.h"
 #include "nav_line.h"
 #include "odometry.h"
@@ -25,14 +26,17 @@
 #define PUT_F32(x) do { float _f = (x); uint32_t _u; memcpy(&_u, &_f, 4); PUT_U32(_u); } while (0)
 
 static uint32_t s_last_core = 0, s_last_drive = 0, s_last_sensors = 0, s_last_qtr = 0;
-static uint8_t  s_led_mode = LED_MODE_DEFAULT;
+static uint8_t  s_led_mode      = LED_MODE_DEFAULT;
+static uint8_t  s_indicator_cfg = LED_INDICATOR_CFG_DEFAULT;
 
 void telemetry_init(void) {
     s_last_core = s_last_drive = s_last_sensors = s_last_qtr = 0;
-    s_led_mode = LED_MODE_DEFAULT;
+    s_led_mode      = LED_MODE_DEFAULT;
+    s_indicator_cfg = LED_INDICATOR_CFG_DEFAULT;
 }
 
 void telemetry_set_led_mode(uint8_t mode) { s_led_mode = mode; }
+void telemetry_set_indicator_cfg(uint8_t cfg) { s_indicator_cfg = cfg; }
 
 static uint8_t status_flags(void) {
     uint8_t f = 0;
@@ -44,7 +48,7 @@ static uint8_t status_flags(void) {
 }
 
 static void send_core(uint32_t now_ms) {
-    uint8_t buf[44];
+    uint8_t buf[48];
     uint32_t off = 0;
     PUT_U32(now_ms);
     PUT_U8(safety_mode());
@@ -62,6 +66,7 @@ static void send_core(uint32_t now_ms) {
     PUT_U16(analog_current_ma(1));
     PUT_U16(proximity_obstructed());
     PUT_U8(s_led_mode);                 /* offset 41 — drives the ESP32 ring animation */
+    PUT_U8(s_indicator_cfg);            /* offset 42 — base + fixed/responsive for the indicator ring */
     proto_send(PKT_TLM_CORE, buf, (uint8_t)off);
 }
 
@@ -80,20 +85,26 @@ static void send_drive(void) {
 }
 
 static void send_sensors(void) {
-    uint8_t buf[44];
+    /* 41 fixed bytes + a variable LiDAR-segment tail (u16 mm each). */
+    uint8_t buf[41 + 2 * LIDAR_MAX_SEGMENTS];
     uint32_t off = 0;
     for (uint32_t c = 0; c < HX711_NUM_CORNERS; c++) PUT_F32(loadcells_kg(c));
-    PUT_F32(imu_yaw_deg());
+    /* MPU6050 has no absolute yaw; fused heading rides in TLM_CORE (odom_theta).
+     * The yaw slot instead carries the KF gyro-bias estimate (deg/s) for tuning. */
+    PUT_F32(odometry_gyro_bias_radps() * 180.0f / 3.14159265358979323846f);
     PUT_F32(imu_pitch_deg());
     PUT_F32(imu_roll_deg());
-    uint8_t calib = (uint8_t)((imu_calib_sys()   << 6) |
-                              (imu_calib_gyro()  << 4) |
-                              (imu_calib_accel() << 2) |
-                               imu_calib_mag());
-    PUT_U8(calib);
+    uint8_t imu_status = (uint8_t)((imu_present()              ? 0x01u : 0) |
+                                   (imu_has_data()             ? 0x02u : 0) |
+                                   (odometry_bias_converged()  ? 0x04u : 0) |
+                                   (odometry_zupt_active()     ? 0x08u : 0));
+    PUT_U8(imu_status);
     for (uint32_t i = 0; i < TOF_NUM_SENSORS; i++) PUT_U16(tof_distance_mm(i));  /* mm, FRLR */
     PUT_U16(battery_mv(BATTERY_3S));
     PUT_U16(battery_mv(BATTERY_6S));
+    /* LiDAR tail: 0 segments when stale/absent so consumers see no fresh data. */
+    uint8_t nseg = lidar_segment_count();
+    for (uint8_t i = 0; i < nseg; i++) PUT_U16(lidar_segment_mm(i));
     proto_send(PKT_TLM_SENSORS, buf, (uint8_t)off);
 }
 

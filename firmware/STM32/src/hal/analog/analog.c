@@ -8,6 +8,8 @@ static bool              s_have_data = false;
 static bool              s_scan_in_flight = false;
 static uint32_t          s_last_scan_ms = 0;
 
+static const uint8_t     s_qtr_map[ANALOG_QTR_COUNT] = QTR_PIN_MAP;
+
 #define CHSELR_BITS ( ADC_CHSELR_CHSEL2  | ADC_CHSELR_CHSEL3  \
                     | ADC_CHSELR_CHSEL4  | ADC_CHSELR_CHSEL5  \
                     | ADC_CHSELR_CHSEL10 | ADC_CHSELR_CHSEL11 \
@@ -95,7 +97,7 @@ static uint16_t raw(uint32_t idx) {
 
 uint16_t analog_qtr(uint32_t idx) {
     if (idx >= ANALOG_QTR_COUNT) return 0;
-    return raw(ANALOG_IDX_QTR_FIRST + idx);
+    return raw(ANALOG_IDX_QTR_FIRST + s_qtr_map[idx]);
 }
 
 uint16_t analog_current_ma(uint32_t side) {

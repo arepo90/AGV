@@ -155,7 +155,39 @@ function StandbyPanel({ theme, agv, connected, telem }) {
           ))}
         </div>
         <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
-          Animation for the four WS2812B rings; colour follows system state (green / yellow / red). <code>PARAM_LED_MODE (0x50)</code>.
+          Animation for the three state rings (two small + one big); colour follows system state (green / yellow / red). <code>PARAM_LED_MODE (0x50)</code>.
+        </div>
+
+        {/* Reactive obstacle ring — one big ring shows per-sensor distance instead of state. */}
+        <div style={{ marginTop: '14px' }}>
+          <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>Obstacle Ring</div>
+          <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginBottom: '4px' }}>Base</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {[['○ Off', window.AGV_PROTO.LED_BASE.OFF], ['◌ White', window.AGV_PROTO.LED_BASE.WHITE]].map(([lbl, v]) => (
+                  <PanelBtn theme={theme} disabled={disabled} key={v} color={((telem.ledIndicatorCfg >> 0) & 1) === v ? theme.success : theme.accent}
+                    onClick={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM.LED_BASE, v))}>
+                    {((telem.ledIndicatorCfg >> 0) & 1) === v ? '● ' : ''}{lbl}
+                  </PanelBtn>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginBottom: '4px' }}>Spread</div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {[['▭ Fixed', window.AGV_PROTO.LED_INDICATOR_MODE.FIXED], ['◈ Responsive', window.AGV_PROTO.LED_INDICATOR_MODE.RESPONSIVE]].map(([lbl, v]) => (
+                  <PanelBtn theme={theme} disabled={disabled} key={v} color={((telem.ledIndicatorCfg >> 1) & 1) === v ? theme.success : theme.accent}
+                    onClick={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM.LED_INDICATOR_MODE, v))}>
+                    {((telem.ledIndicatorCfg >> 1) & 1) === v ? '● ' : ''}{lbl}
+                  </PanelBtn>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
+            One big ring maps each distance sensor to LEDs: IR red on detection, TOF / LiDAR yellow→red by range. Responsive widens the TOF span as range falls. <code>PARAM 0x51–0x52</code>.
+          </div>
         </div>
       </div>
     </div>
@@ -677,13 +709,14 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         <Row label="Left RPM" value={fmt(encoders.leftRpm, 1)} unit="rpm" color={theme.accent} />
         <Row label="Right RPM" value={fmt(encoders.rightRpm, 1)} unit="rpm" color={theme.accent} />
       </Card>
-      <Card title="IMU — BNO055">
+      <Card title="IMU — MPU6050">
         <Row label="Roll" value={fmt(imu.roll, 2)} unit="°" />
         <Row label="Pitch" value={fmt(imu.pitch, 2)} unit="°" />
-        <Row label="Yaw" value={fmt(imu.yaw, 1)} unit="°" color={theme.accent} />
-        <Row label="Calib sys" value={imu.calib_sys ?? 0} unit="/3" />
-        <Row label="Calib gyro" value={imu.calib_gyro ?? 0} unit="/3" />
-        <Row label="Calib accel" value={imu.calib_accel ?? 0} unit="/3" />
+        <Row label="Gyro bias" value={fmt(imu.gyroBias, 3)} unit="°/s" color={theme.accent} />
+        <Row label="Bias conv." value={imu.biasConverged ? 'yes' : 'no'}
+             color={imu.biasConverged ? theme.success : theme.warn} />
+        <Row label="ZUPT" value={imu.zuptActive ? 'active' : '—'}
+             color={imu.zuptActive ? theme.success : theme.muted} />
       </Card>
 
       {/* Row 3: Weight Distribution | Load Cells | (empty) */}

@@ -14,6 +14,7 @@
 #include "nav.h"
 #include "nav_line.h"
 #include "odometry.h"
+#include "lidar.h"
 #include "proto.h"
 #include "proximity.h"
 #include "ramp.h"
@@ -99,6 +100,9 @@ int main(void) {
 #endif
 #if !DISABLE_BATTERY
     battery_init();    /* INA219 ×2 (3S/6S bus voltage) */
+#endif
+#if !DISABLE_LIDAR
+    lidar_init();      /* receive-side buffer for Jetson-pushed LaserScan segments */
 #endif
     safety_init();
     nav_init();

@@ -26,27 +26,46 @@
 static HardwareSerial s_stm32(1);
 static frame_parser_t s_uart_parser;
 
-/* Tap completed UART frames: the CORE telemetry stream drives the local
- * indicators. Frame layout: index 4 = TYPE, index 5 = LEN, index 6+ = payload.
- * CORE payload: timestamp(u32) then mode/function/estop/caution at offsets
- * 4/5/6/7, and led_mode at offset 39 (drives the ring animation style). */
+/* Tap completed UART frames to drive the local indicators. Frame layout:
+ * index 4 = TYPE, index 5 = LEN, index 6+ = payload.
+ *   CORE (0x03):    mode/function at payload off 4/5, estop/caution u16 at 6/8,
+ *                   proximity u16 at 39, led_mode at 41, led_indicator_cfg at 42.
+ *   SENSORS (0x0A): tof_mm[4] u16 from off 29; LiDAR segment tail u16 from off 41. */
 static void tap_telemetry(const uint8_t *frame, size_t total_len) {
-    if (total_len < 16) return;     /* header(6) + 10 leading payload bytes */
-    uint8_t type = frame[4];
-    uint8_t len  = frame[5];
-    if (type != 0x03 /* PKT_TLM_CORE */) return;
-    if (len < 10) return;
+    if (total_len < 8) return;
+    uint8_t        type = frame[4];
+    uint8_t        len  = frame[5];
+    const uint8_t *pl   = &frame[6];
 
-    uint8_t  mode            = frame[6 + 4];
-    uint8_t  function        = frame[6 + 5];
-    uint16_t estop_sources   = (uint16_t)(frame[6 + 6] | (frame[6 + 7] << 8));
-    uint16_t caution_sources = (uint16_t)(frame[6 + 8] | (frame[6 + 9] << 8));
-    uint8_t  led_mode        = (len >= 42) ? frame[6 + 41] : 0;
+    if (type == 0x03 /* PKT_TLM_CORE */) {
+        if (len < 43) return;       /* need through led_indicator_cfg at offset 42 */
+        uint8_t  mode            = pl[4];
+        uint8_t  function        = pl[5];
+        uint16_t estop_sources   = (uint16_t)(pl[6] | (pl[7] << 8));
+        uint16_t caution_sources = (uint16_t)(pl[8] | (pl[9] << 8));
+        uint16_t proximity_bits  = (uint16_t)(pl[39] | (pl[40] << 8));
+        uint8_t  led_mode        = pl[41];
+        uint8_t  indicator_cfg   = pl[42];
 
-    ledring_update_from_telemetry(estop_sources, caution_sources, led_mode, millis());
-    status_led_update_estop(estop_sources != 0);
-    status_led_update_mode(mode == 0);          /* mode 0 = SUPERVISED */
-    status_led_update_function(function);
+        ledring_update_from_telemetry(estop_sources, caution_sources, led_mode,
+                                      indicator_cfg, proximity_bits, millis());
+        status_led_update_estop(estop_sources != 0);
+        status_led_update_mode(mode == 0);          /* mode 0 = SUPERVISED */
+        status_led_update_function(function);
+    } else if (type == 0x0A /* PKT_TLM_SENSORS */) {
+        if (len < 41) return;
+        uint16_t tof[4];
+        for (int i = 0; i < 4; i++)
+            tof[i] = (uint16_t)(pl[29 + 2 * i] | (pl[29 + 2 * i + 1] << 8));
+
+        uint8_t nseg = (uint8_t)((len - 41u) / 2u);
+        if (nseg > LED_LIDAR_MAX_SEGMENTS) nseg = LED_LIDAR_MAX_SEGMENTS;
+        uint16_t lidar[LED_LIDAR_MAX_SEGMENTS];
+        for (uint8_t k = 0; k < nseg; k++)
+            lidar[k] = (uint16_t)(pl[41 + 2 * k] | (pl[41 + 2 * k + 1] << 8));
+
+        ledring_update_sensors(tof, lidar, nseg);
+    }
 }
 
 static void on_complete(const uint8_t *frame, size_t total_len) {

@@ -2,6 +2,7 @@
 #include "analog.h"
 #include "battery.h"
 #include "config.h"
+#include "lidar.h"
 #include "loadcells.h"
 #include "log.h"
 #include "mcu.h"
@@ -246,6 +247,10 @@ static uint16_t s_batt_caution_mv = BATTERY_3S_CAUTION_MV;
 static uint16_t s_batt_estop_mv   = BATTERY_3S_ESTOP_MV;
 static uint8_t  s_batt_state      = 0;     /* 0 normal,1 caution,2 estop (3S, hysteretic) */
 static bool     s_batt6_low       = false;
+static uint16_t s_lidar_caution_mm  = LIDAR_CAUTION_MM;
+static uint16_t s_lidar_critical_mm = LIDAR_CRITICAL_MM;
+static uint16_t s_lidar_estop_mm    = LIDAR_ESTOP_MM;
+static uint8_t  s_lidar_band        = 0;   /* 0 clear,1 caution,2 critical,3 estop */
 
 void safety_set_weight_caution_kg(float kg)   { if (kg > 0.0f && kg < 1000.0f) s_w_caution_kg = kg; }
 void safety_set_weight_estop_kg(float kg)     { if (kg > 0.0f && kg < 1000.0f) s_w_estop_kg = kg; }
@@ -257,6 +262,10 @@ void safety_set_tof_critical_mm(float mm)     { if (mm > 0.0f && mm < 4000.0f) s
 void safety_set_tof_estop_mm(float mm)        { if (mm > 0.0f && mm < 4000.0f) s_tof_estop_mm    = (uint16_t)mm; }
 void safety_set_battery_caution_mv(float mv)  { if (mv > 5000.0f && mv < 30000.0f) s_batt_caution_mv = (uint16_t)mv; }
 void safety_set_battery_estop_mv(float mv)    { if (mv > 5000.0f && mv < 30000.0f) s_batt_estop_mv   = (uint16_t)mv; }
+
+void safety_set_lidar_caution_mm(float mm)    { if (mm > 0.0f && mm < 12000.0f) s_lidar_caution_mm  = (uint16_t)mm; }
+void safety_set_lidar_critical_mm(float mm)   { if (mm > 0.0f && mm < 12000.0f) s_lidar_critical_mm = (uint16_t)mm; }
+void safety_set_lidar_estop_mm(float mm)      { if (mm > 0.0f && mm < 12000.0f) s_lidar_estop_mm    = (uint16_t)mm; }
 
 static void cargo_tick(void) {
 #if !DISABLE_LOAD_CELLS
@@ -363,6 +372,49 @@ static void tof_tick_monitor(void) {
 #endif
 }
 
+/* LiDAR distance bands → caution + auto-clearing E-STOP, identical policy to the
+ * TOF monitor but fed by Jetson-pushed segments (min over the fresh set). A dead
+ * Jetson link reports "clear" (fail-safe), so it can never latch the E-STOP. */
+static void lidar_tick_monitor(void) {
+#if !DISABLE_LIDAR
+    bool fresh = lidar_is_fresh();
+    uint16_t d = lidar_min_distance_mm();    /* clear sentinel when stale */
+
+    uint8_t band = (d < s_lidar_estop_mm)    ? 3u
+                 : (d < s_lidar_critical_mm) ? 2u
+                 : (d < s_lidar_caution_mm)  ? 1u : 0u;
+
+    switch (band) {
+    case 3:
+        safety_estop_assert(ESTOP_SRC_LIDAR);
+        safety_caution_set(CAUTION_SRC_LIDAR_NEAR, CAUTION_LEVEL_CRITICAL);
+        break;
+    case 2:
+        safety_estop_clear_autoclearing(ESTOP_SRC_LIDAR);
+        safety_caution_set(CAUTION_SRC_LIDAR_NEAR, CAUTION_LEVEL_CRITICAL);
+        break;
+    case 1:
+        safety_estop_clear_autoclearing(ESTOP_SRC_LIDAR);
+        safety_caution_set(CAUTION_SRC_LIDAR_NEAR, CAUTION_LEVEL_CAUTION);
+        break;
+    default:
+        safety_estop_clear_autoclearing(ESTOP_SRC_LIDAR);
+        safety_caution_clear(CAUTION_SRC_LIDAR_NEAR);
+        break;
+    }
+
+    if (band != s_lidar_band) {
+        if (band == 0)
+            log_record(LOG_MOD_LIDAR, LOG_SEV_INFO,
+                       fresh ? LOG_CODE_LIDAR_CLEARED : LOG_CODE_LIDAR_STALE, d);
+        else if (band > s_lidar_band)
+            log_record(LOG_MOD_LIDAR, LOG_SEV_WARN, LOG_CODE_LIDAR_TRIGGERED,
+                       ((uint32_t)band << 16) | d);
+        s_lidar_band = band;
+    }
+#endif
+}
+
 /* Battery: 3S rail (motors/logic) gets a hysteretic caution→E-STOP state machine
  * so sag-under-load can't chatter; E-STOP auto-clears once recovered. The 6S rail
  * powers only the Jetson, so it is log-warning only. */
@@ -421,6 +473,7 @@ void safety_monitors_tick(void) {
     cargo_tick();
     current_tick();
     tof_tick_monitor();
+    lidar_tick_monitor();
     battery_tick_monitor();
 }
 
@@ -441,6 +494,7 @@ void safety_init(void) {
     s_oc_streak[0] = 0;
     s_oc_streak[1] = 0;
     s_tof_band = 0;
+    s_lidar_band = 0;
     s_batt_state = 0;
     s_batt6_low = false;
     update_unsupervised_baseline();

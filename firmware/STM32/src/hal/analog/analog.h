@@ -7,13 +7,16 @@
 /* =============================================================================
  *  ADC1 multi-channel scan with DMA (DMA1 channel 1).  (hal tier)
  *
- *  Forward scan in channel-number order:
- *    IN2  PA2  M1 current   → idx 0      IN12 PC2  QTR5  → idx 6
- *    IN3  PA3  M2 current   → idx 1      IN13 PC3  QTR6  → idx 7
- *    IN4  PA4  QTR1         → idx 2      IN14 PC4  QTR7  → idx 8
- *    IN5  PA5  QTR2         → idx 3      IN15 PC5  QTR8  → idx 9
- *    IN10 PC0  QTR3         → idx 4
- *    IN11 PC1  QTR4         → idx 5
+ *  Forward scan in channel-number order (hardware-fixed):
+ *    IN2  PA2  M1 current   → idx 0      IN12 PC2  QTR slot 4  → idx 6
+ *    IN3  PA3  M2 current   → idx 1      IN13 PC3  QTR slot 5  → idx 7
+ *    IN4  PA4  QTR slot 0   → idx 2      IN14 PC4  QTR slot 6  → idx 8
+ *    IN5  PA5  QTR slot 1   → idx 3      IN15 PC5  QTR slot 7  → idx 9
+ *    IN10 PC0  QTR slot 2   → idx 4
+ *    IN11 PC1  QTR slot 3   → idx 5
+ *
+ *  analog_qtr(i) returns logical sensor i, remapped through QTR_PIN_MAP
+ *  (config.h) to decouple logical order from physical wiring order.
  *
  *  analog_tick() triggers a fresh scan on schedule and harvests the previous
  *  one's DMA buffer — non-blocking (a 10-channel scan is ~17 µs).

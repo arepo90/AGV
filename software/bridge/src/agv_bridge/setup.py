@@ -25,6 +25,7 @@ setup(
             'uart_bridge_node = agv_bridge.uart_bridge_node:main',
             'ws_bridge_node = agv_bridge.ws_bridge_node:main',
             'panel_node = agv_bridge.panel_node:main',
+            'lidar_node = agv_bridge.lidar_node:main',
         ],
     },
 )
