@@ -1,5 +1,0 @@
-# op: 0=begin sweep, 1=save+persist, 2=cancel, 3=reset defaults
-uint8 op
----
-bool success
-uint8 nack_code

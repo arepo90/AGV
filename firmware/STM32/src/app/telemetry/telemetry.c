@@ -4,7 +4,6 @@
 #include "config.h"
 #include "control.h"
 #include "encoders.h"
-#include "imu.h"
 #include "lidar.h"
 #include "loadcells.h"
 #include "nav_line.h"
@@ -12,7 +11,6 @@
 #include "proto.h"
 #include "proximity.h"
 #include "safety.h"
-#include "tof.h"
 #include "types.h"
 #include <string.h>
 
@@ -42,7 +40,6 @@ static uint8_t status_flags(void) {
     uint8_t f = 0;
     if (analog_has_data())            f |= 0x01u;
     if (loadcells_has_data())         f |= 0x02u;
-    if (imu_has_data())               f |= 0x04u;
     if (loadcells_tare_in_progress()) f |= 0x08u;
     return f;
 }
@@ -53,7 +50,7 @@ static void send_core(uint32_t now_ms) {
     PUT_U32(now_ms);
     PUT_U8(safety_mode());
     PUT_U8(safety_function());
-    PUT_U16(safety_estop_sources());    /* 16-bit: 9 sources incl. TOF + battery */
+    PUT_U16(safety_estop_sources());    /* 16-bit bitmask (bit9 = LiDAR) */
     PUT_U16(safety_caution_sources());
     PUT_F32(safety_caution_modifier());
     PUT_U8(status_flags());
@@ -85,23 +82,11 @@ static void send_drive(void) {
 }
 
 static void send_sensors(void) {
-    /* 41 fixed bytes + a variable LiDAR-segment tail (u16 mm each). */
-    uint8_t buf[41 + 2 * LIDAR_MAX_SEGMENTS];
+    /* 18 fixed bytes + a variable LiDAR-segment tail (u16 mm each). */
+    uint8_t buf[18 + 2 * LIDAR_MAX_SEGMENTS];
     uint32_t off = 0;
     for (uint32_t c = 0; c < HX711_NUM_CORNERS; c++) PUT_F32(loadcells_kg(c));
-    /* MPU6050 has no absolute yaw; fused heading rides in TLM_CORE (odom_theta).
-     * The yaw slot instead carries the KF gyro-bias estimate (deg/s) for tuning. */
-    PUT_F32(odometry_gyro_bias_radps() * 180.0f / 3.14159265358979323846f);
-    PUT_F32(imu_pitch_deg());
-    PUT_F32(imu_roll_deg());
-    uint8_t imu_status = (uint8_t)((imu_present()              ? 0x01u : 0) |
-                                   (imu_has_data()             ? 0x02u : 0) |
-                                   (odometry_bias_converged()  ? 0x04u : 0) |
-                                   (odometry_zupt_active()     ? 0x08u : 0));
-    PUT_U8(imu_status);
-    for (uint32_t i = 0; i < TOF_NUM_SENSORS; i++) PUT_U16(tof_distance_mm(i));  /* mm, FRLR */
-    PUT_U16(battery_mv(BATTERY_3S));
-    PUT_U16(battery_mv(BATTERY_6S));
+    PUT_U16(battery_mv());
     /* LiDAR tail: 0 segments when stale/absent so consumers see no fresh data. */
     uint8_t nseg = lidar_segment_count();
     for (uint8_t i = 0; i < nseg; i++) PUT_U16(lidar_segment_mm(i));
@@ -135,8 +120,8 @@ void telemetry_tick(uint32_t now_ms) {
     if (due(&s_last_sensors, now_ms, TLM_SENSORS_HZ))
         send_sensors();
 
-    /* QTR only matters while following a line or calibrating. */
-    if ((safety_function() == FUNC_LINE_FOLLOW || nav_line_cal_active()) &&
+    /* QTR only matters while following a line. */
+    if (safety_function() == FUNC_LINE_FOLLOW &&
         due(&s_last_qtr, now_ms, CONTROL_LOOP_HZ))
         send_qtr();
 #endif

@@ -30,7 +30,8 @@ void motors_set_signed(side_t side, float duty) {
     bool reverse = (d < 0.0f);
     if (reverse) d = -d;
 
-    uint8_t ch = (side == SIDE_LEFT) ? 0u : 1u;
+    /* Logical side → hardware channel from config (MOTOR_CH_*). */
+    uint8_t ch = (side == SIDE_LEFT) ? (uint8_t)MOTOR_CH_LEFT : (uint8_t)MOTOR_CH_RIGHT;
     pwm_set_dir(ch, reverse);
     pwm_set_duty(ch, d);
 }

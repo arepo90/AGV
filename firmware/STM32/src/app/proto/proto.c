@@ -1,4 +1,5 @@
 #include "proto.h"
+#include "battery.h"
 #include "control.h"
 #include "crc.h"
 #include "lidar.h"
@@ -7,7 +8,6 @@
 #include "mcu.h"
 #include "nav.h"
 #include "nav_line.h"
-#include "nav_traj.h"
 #include "odometry.h"
 #include "ramp.h"
 #include "safety.h"
@@ -86,9 +86,7 @@ static bool param_apply_one(uint8_t id, float v) {
     case PARAM_LINE_KD: s_line_kd = v; nav_line_set_gains(s_line_kp, s_line_ki, s_line_kd); break;
     case PARAM_LINE_CRUISE_MPS:      nav_line_set_cruise_mps(v);      break;
     case PARAM_QTR_LINE_LOST_THRESH: nav_line_set_lost_threshold(v);  break;
-    case PARAM_TRAJ_CRUISE_MPS:      nav_traj_set_cruise_mps(v);      break;
-    case PARAM_TRAJ_LOOKAHEAD_M:     nav_traj_set_lookahead_m(v);     break;
-    case PARAM_TRAJ_CURV_SLOWDOWN:   nav_traj_set_curv_slowdown(v);   break;
+    case PARAM_LINE_T_BLACK:         nav_line_set_t_black_counts(v);  break;
 
     case PARAM_WEIGHT_CAUTION_KG: safety_set_weight_caution_kg(v);  break;
     case PARAM_WEIGHT_ESTOP_KG:   safety_set_weight_estop_kg(v);    break;
@@ -115,9 +113,6 @@ static bool param_apply_one(uint8_t id, float v) {
         telemetry_set_indicator_cfg(s_indicator_cfg);
         break;
 
-    case PARAM_TOF_CAUTION_MM:     safety_set_tof_caution_mm(v);     break;
-    case PARAM_TOF_CRITICAL_MM:    safety_set_tof_critical_mm(v);    break;
-    case PARAM_TOF_ESTOP_MM:       safety_set_tof_estop_mm(v);       break;
     case PARAM_BATT_3S_CAUTION_MV: safety_set_battery_caution_mv(v); break;
     case PARAM_BATT_3S_ESTOP_MV:   safety_set_battery_estop_mv(v);   break;
     case PARAM_LIDAR_CAUTION_MM:   safety_set_lidar_caution_mm(v);   break;
@@ -186,7 +181,7 @@ static void handle_cmd(uint8_t seq, const uint8_t *p, uint8_t len) {
 
     case CMD_OVERRIDE_ESTOP_SOURCE: {
         if (len < 2) { send_nack(seq, NACK_BAD_LENGTH); return; }
-        /* u16 mask, little-endian; the optional high byte reaches TOF/battery. */
+        /* u16 mask, little-endian; the optional high byte reaches battery/LiDAR. */
         uint16_t mask = p[1];
         if (len >= 3) mask |= (uint16_t)p[2] << 8;
         safety_estop_force_clear(mask);
@@ -217,44 +212,6 @@ static void handle_cmd(uint8_t seq, const uint8_t *p, uint8_t len) {
         log_clear();
         send_ack(seq, 0);
         return;
-
-    case CMD_LOAD_TRAJECTORY: {
-        if (len < 2) { send_nack(seq, NACK_BAD_LENGTH); return; }
-        if (safety_function() == FUNC_TRAJECTORY_FOLLOW) { send_nack(seq, NACK_ILLEGAL_TRANSITION); return; }
-        uint8_t op = p[1];
-        if (op == 0) {
-            nav_traj_clear();
-            send_ack(seq, 0);
-        } else if (op == 1) {
-            if (len < 2u + 2u * sizeof(float)) { send_nack(seq, NACK_BAD_LENGTH); return; }
-            float x, y;
-            memcpy(&x, &p[2], sizeof x);
-            memcpy(&y, &p[2 + sizeof(float)], sizeof y);
-            if (nav_traj_add(x, y)) {
-                if (nav_traj_count() == 1)
-                    log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_TRAJECTORY_LOADED, 0);
-                send_ack(seq, 0);
-            } else {
-                send_nack(seq, NACK_BUSY);
-            }
-        } else {
-            send_nack(seq, NACK_UNKNOWN_SUBTYPE);
-        }
-        return;
-    }
-
-    case CMD_QTR_CALIBRATE: {
-        if (len < 2) { send_nack(seq, NACK_BAD_LENGTH); return; }
-        if (safety_function() != FUNC_STANDBY) { send_nack(seq, NACK_ILLEGAL_TRANSITION); return; }
-        switch (p[1]) {
-        case 0: nav_line_cal_begin();  send_ack(seq, 0); break;
-        case 1: nav_line_cal_save()          ? send_ack(seq, 0) : send_nack(seq, NACK_BUSY); break;
-        case 2: nav_line_cal_cancel(); send_ack(seq, 0); break;
-        case 3: nav_line_cal_reset_defaults()? send_ack(seq, 0) : send_nack(seq, NACK_BUSY); break;
-        default: send_nack(seq, NACK_UNKNOWN_SUBTYPE); break;
-        }
-        return;
-    }
 
     case CMD_LOAD_RAMP_CURVE: {
         if (len < 2) { send_nack(seq, NACK_BAD_LENGTH); return; }
@@ -294,8 +251,12 @@ static void handle_cmd(uint8_t seq, const uint8_t *p, uint8_t len) {
 }
 
 static void dispatch(uint8_t type, uint8_t seq, const uint8_t *payload, uint8_t len) {
-    /* Any packet from the workstation is proof of life. */
-    safety_heartbeat_received();
+    /* Any packet from the workstation is proof of life — except the two pushed
+     * autonomously from nearer hops (LIDAR_SEGMENTS by the Jetson, BATTERY by
+     * the ESP32): they must not mask a dead workstation (the heartbeat is
+     * end-to-end, GUI → firmware). */
+    if (type != PKT_LIDAR_SEGMENTS && type != PKT_BATTERY)
+        safety_heartbeat_received();
 
     switch (type) {
     case PKT_HEARTBEAT:
@@ -322,6 +283,12 @@ static void dispatch(uint8_t type, uint8_t seq, const uint8_t *payload, uint8_t 
         lidar_set_segments(seg, n);
         return;
     }
+
+    case PKT_BATTERY:
+        /* ESP32-pushed INA219 reading; fire-and-forget like LIDAR_SEGMENTS. */
+        if (len >= 2u)
+            battery_push_mv((uint16_t)(payload[0] | ((uint16_t)payload[1] << 8)));
+        return;
 
     case PKT_RESET: {
         uint8_t mode = (len > 0) ? payload[0] : 0u;
@@ -375,15 +342,19 @@ static uint8_t  s_last_seq = 0;
 static void parser_reset(void) { s_state = P_MAGIC0; s_pidx = 0; }
 
 static void on_frame_complete(void) {
-    /* SEQ gap detection (diagnostic). */
-    if (s_seq_seen) {
-        uint8_t expected = (uint8_t)(s_last_seq + 1u);
-        if (s_seq != expected)
-            log_record(LOG_MOD_COMMS, LOG_SEV_WARN, LOG_CODE_SEQ_GAP,
-                       (uint32_t)(uint8_t)(s_seq - expected));
+    /* SEQ gap detection (diagnostic). PKT_BATTERY is exempt: the ESP32 injects
+     * it with its own SEQ counter, so it would alias as a gap against the host
+     * stream (and the host's next frame as another) on every 2 Hz push. */
+    if (s_type != PKT_BATTERY) {
+        if (s_seq_seen) {
+            uint8_t expected = (uint8_t)(s_last_seq + 1u);
+            if (s_seq != expected)
+                log_record(LOG_MOD_COMMS, LOG_SEV_WARN, LOG_CODE_SEQ_GAP,
+                           (uint32_t)(uint8_t)(s_seq - expected));
+        }
+        s_last_seq = s_seq;
+        s_seq_seen = true;
     }
-    s_last_seq = s_seq;
-    s_seq_seen = true;
 
     dispatch(s_type, s_seq, s_payload, s_len);
 }

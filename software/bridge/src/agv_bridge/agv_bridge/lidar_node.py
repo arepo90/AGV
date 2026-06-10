@@ -7,7 +7,7 @@ in millimetres as ``agv_msgs/LidarSegments`` on ``/agv/lidar_segments``.
 
 The segments are *not* acted on here: ``uart_bridge_node`` forwards them to the
 STM32 (PKT_LIDAR_SEGMENTS), which applies the same distance-band caution/E-STOP
-policy as the TOF sensors and echoes them back up in TLM_SENSORS for the LED ring.
+distance-band policy and echoes them back up in TLM_SENSORS for the LED ring.
 Keeping the STM32 as the single safety authority is deliberate — see
 ``reference/architecture.md``.
 

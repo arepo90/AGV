@@ -47,7 +47,9 @@ static void adc_hw_init(void) {
     while (!(ADC1->ISR & ADC_ISR_ADRDY)) { }
     ADC1->ISR = ADC_ISR_ADRDY;
 
-    ADC1->SMPR   = 2u;          /* 7.5 ADC cycles/sample */
+    ADC1->SMPR   = 7u;          /* 239.5 cycles/sample — the QTR-8A's high source
+                                 * impedance needs the settle time; a full 10-ch
+                                 * scan is still ~210 µs at 12 MHz (100 Hz rate) */
     ADC1->CHSELR = CHSELR_BITS;
     ADC1->CFGR1  = ADC_CFGR1_DMAEN;   /* one-shot per scan */
 }

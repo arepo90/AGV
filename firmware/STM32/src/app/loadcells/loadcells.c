@@ -12,7 +12,9 @@ static int32_t  s_raw[HX711_NUM_CORNERS];
 static int32_t  s_offset[HX711_NUM_CORNERS];
 static float    s_scale[HX711_NUM_CORNERS];
 static bool     s_have_data = false;
+#if !DISABLE_LOAD_CELLS
 static uint32_t s_last_read_ms = 0;
+#endif
 
 static bool     s_tare_active = false;
 static uint8_t  s_tare_left = 0;
@@ -24,6 +26,7 @@ static inline void sck_low(void)     { GPIOB->BSRR = 1u << (SCK_BIT + 16u); }
 static inline uint16_t dout_all(void){ return (uint16_t)(GPIOB->IDR & DOUT_MASK); }
 static inline bool all_ready(void)   { return dout_all() == 0; }   /* DOUT low = ready */
 
+#if !DISABLE_LOAD_CELLS
 /* Read one 24-bit word from each corner in parallel; sign-extend to int32. */
 static void read_all(int32_t out[HX711_NUM_CORNERS]) {
     int32_t v[HX711_NUM_CORNERS] = { 0, 0, 0, 0 };
@@ -52,6 +55,7 @@ static void read_all(int32_t out[HX711_NUM_CORNERS]) {
         out[c] = v[c];
     }
 }
+#endif /* !DISABLE_LOAD_CELLS */
 
 void loadcells_init(void) {
     RCC->AHBENR |= RCC_AHBENR_GPIOBEN;

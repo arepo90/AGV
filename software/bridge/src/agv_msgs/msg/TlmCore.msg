@@ -4,11 +4,11 @@ std_msgs/Header header
 
 uint32 timestamp_ms
 uint8 mode                  # 0=SUPERVISED, 1=UNSUPERVISED
-uint8 function              # 0=STANDBY, 1=REMOTE_CONTROL, 2=LINE_FOLLOW, 3=TRAJECTORY_FOLLOW
-uint16 estop_sources        # bitmask (bit7=TOF, bit8=battery)
-uint16 caution_sources      # bitmask (bit5=TOF, bit6=battery)
+uint8 function              # 0=STANDBY, 1=REMOTE_CONTROL, 2=LINE_FOLLOW
+uint16 estop_sources        # bitmask (bit8=battery, bit9=LiDAR; bit7 retired)
+uint16 caution_sources      # bitmask (bit6=battery, bit7=LiDAR; bit5 retired)
 float32 caution_modifier
-uint8 flags                 # bit0=adc, bit1=hx711, bit2=imu, bit3=tare_in_progress
+uint8 flags                 # bit0=adc, bit1=hx711, bit3=tare_in_progress
 
 float32 velocity_linear
 float32 velocity_angular

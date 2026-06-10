@@ -131,13 +131,6 @@ function useLogStream(connected, telem, telemTimeout) {
     prevMode.current = telem.mode;
   }, [telem.mode]);
 
-  React.useEffect(() => {
-    const interval = setInterval(() => {
-      if (connected && Math.random() < 0.04) addLog('DEBUG', `Heartbeat OK — latency ${telem.comms.latency}ms`);
-    }, 2000);
-    return () => clearInterval(interval);
-  }, [connected, telem.comms.latency]);
-
   const prevTelemTimeout = React.useRef(false);
   React.useEffect(() => {
     if (telemTimeout && !prevTelemTimeout.current) addLog('WARN', 'STM32 telemetry timeout — no data for 2 s. Display frozen.');
@@ -160,7 +153,7 @@ function SettingsModal({ onClose, theme, wsUrl, setWsUrl }) {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {[
-            { label: 'AGV WebSocket URL', key: 'wsUrl', type: 'text', placeholder: 'ws://192.168.4.1/ws', note: 'ESP32 AP default — ws://192.168.4.1/ws' },
+            { label: 'AGV WebSocket URL', key: 'wsUrl', type: 'text', placeholder: 'ws://<jetson-ip>:8765/ws', note: 'Jetson ws_bridge — ws://<jetson-ip>:8765/ws' },
           ].map(({ label, note, placeholder }) => (
             <div key={label}>
               <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '6px' }}>{label}</div>
@@ -175,7 +168,7 @@ function SettingsModal({ onClose, theme, wsUrl, setWsUrl }) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', fontSize: '11px', fontFamily: theme.monoFont }}>
               {[
                 ['Wheel radius', '0.1000 m'],
-                ['Wheel base', '0.2000 m'],
+                ['Wheel base', '0.4000 m'],
                 ['Encoder PPR', '500 (×4 = 2000 CPR)'],
                 ['Max speed', '1.0 m/s'],
                 ['Max ω', '2.0 rad/s'],
@@ -242,7 +235,6 @@ const TABS = [
   { id: 'dashboard',    label: 'Dashboard',  icon: '⊞' },
   { id: 'telemetry',    label: 'Telemetry',  icon: '∿' },
   { id: 'map',          label: 'Map',        icon: '⊕' },
-  { id: 'trajectory',   label: 'Trajectory', icon: '⤢' },
   { id: 'pid',          label: 'PI Tuning',  icon: '⌀' },
   { id: 'ramp',         label: 'Ramp',       icon: '⟋' },
   { id: 'logs',         label: 'Logs',       icon: '≡' },
@@ -318,7 +310,7 @@ function App() {
   const theme = THEMES[tweaks.theme] || THEMES.clinical;
 
   const [connected, setConnected] = React.useState(false);
-  const [wsUrl, setWsUrl] = React.useState('ws://192.168.4.1/ws');
+  const [wsUrl, setWsUrl] = React.useState('ws://192.168.4.1:8765/ws');
   const [activeTab, setActiveTab] = React.useState('dashboard');
   const [showEstopModal, setShowEstopModal] = React.useState(false);
   const [showSettings, setShowSettings] = React.useState(false);
@@ -331,7 +323,12 @@ function App() {
   // Real WebSocket protocol layer
   const agv = useAGVWebSocket({
     url: wsUrl,
-    onConnected: () => setConnected(true),
+    onConnected: () => {
+      setConnected(true);
+      // Firmware params are RAM-only: push every persisted tunable so the
+      // firmware always matches what the GUI shows (see shared.jsx PARAM_SYNC).
+      syncParamsToFirmware(agv).catch(e => console.warn('[agv] param sync failed:', e.message));
+    },
     onDisconnected: () => setConnected(false),
     onTelemetry: (t) => { if (t) applyRealTelemetry(t); },
     onLog: (entry) => { if (entry && externalLogRef.current) externalLogRef.current(entry); },
@@ -401,9 +398,15 @@ function App() {
       e.preventDefault();
       setRcPressed(p => ({ ...p, [dir]: e.type === 'keydown' }));
     };
+    const onBlur = () => setRcPressed({ fwd: false, back: false, left: false, right: false });
     window.addEventListener('keydown', onKey);
     window.addEventListener('keyup', onKey);
-    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKey); };
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKey);
+      window.removeEventListener('blur', onBlur);
+    };
   }, []);
 
   const rcVRef = React.useRef(0);
@@ -411,7 +414,7 @@ function App() {
   React.useEffect(() => {
     if (!rcActive || !connected || !agv) return;
     const handle = setInterval(() => {
-      try { agv.cmdVelCmd(rcVRef.current, rcOmegaRef.current); } catch (_) {}
+      agv.cmdVelCmd(rcVRef.current, rcOmegaRef.current).catch(() => {});
     }, 50);
     return () => clearInterval(handle);
   }, [rcActive, connected, agv]);
@@ -540,7 +543,6 @@ function App() {
         {activeTab === 'dashboard'    && <DashboardTab telem={telem} setFunc={setFunc} setMode={setMode} theme={theme} agv={agv} connected={connected} rcPressed={rcPressed} setRcPressed={setRcPressed} rcSpeed={rcSpeed} setRcSpeed={setRcSpeed} rcV={rcV} rcOmega={rcOmega} />}
         {activeTab === 'telemetry'    && <TelemetryTab telem={telem} theme={theme} rcActive={rcActive} rcV={rcV} rcOmega={rcOmega} rcPressed={rcPressed} />}
         {activeTab === 'map'          && <MapTab telem={telem} theme={theme} />}
-        {activeTab === 'trajectory'   && <TrajectoryTab telem={telem} theme={theme} />}
         {activeTab === 'pid'          && <PIDTab theme={theme} agv={agv} connected={connected} telem={telem} />}
         {activeTab === 'ramp'         && <RampTab theme={theme} agv={agv} connected={connected} />}
         {activeTab === 'logs'         && <LogsTab logs={logs} theme={theme} agv={agv} connected={connected} />}

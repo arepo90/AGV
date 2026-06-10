@@ -114,12 +114,12 @@ function GainSection({ title, paramNote, keys, theme, gains, setGain }) {
 }
 
 function PIDTab({ theme, agv, connected, telem }) {
-  // Defaults match config.h WHEEL_*/LINE_*/TRAJECTORY_* macros
-  const [gains, setGains] = React.useState({
-    left_kp:  1,  left_ki:  0,  left_kff:  0,
-    right_kp: 1,  right_ki: 0,  right_kff: 0,
-    line_kp:        1.0,  line_ki:        0.0,  line_kd:        0.0,
-    line_cruise:    0.3,  traj_cruise:    0.3,  traj_lookahead: 0.50, traj_curv_slowdown: 0.50,
+  // Defaults match config.h WHEEL_*/LINE_* macros
+  const [gains, setGains] = usePersistentState('pid.gains', {
+    left_kp:  5,  left_ki:  0.5,  left_kff:  0,
+    right_kp: 5,  right_ki: 0.5,  right_kff: 0,
+    line_kp:     3.0,  line_ki:     0.0,  line_kd:     0.0,
+    line_cruise: 0.2,
   });
   const [sent, setSent] = React.useState(null);
 
@@ -127,8 +127,8 @@ function PIDTab({ theme, agv, connected, telem }) {
   const PARAM_MAP = {
     left_kp:  0x10, left_ki:  0x11, left_kff:  0x12,
     right_kp: 0x13, right_ki: 0x14, right_kff: 0x15,
-    line_kp:        0x20, line_ki:        0x21, line_kd:        0x22,
-    line_cruise:    0x23, traj_cruise:    0x24, traj_lookahead: 0x25, traj_curv_slowdown: 0x27,
+    line_kp:     0x20, line_ki:     0x21, line_kd:     0x22,
+    line_cruise: 0x23,
   };
 
   function setGain(k, v) {
@@ -175,11 +175,6 @@ function PIDTab({ theme, agv, connected, telem }) {
           ['line_cruise', 'Cruise (m/s)', 0, 1.0, 0.01],
         ]} />
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', justifyContent: 'flex-end' }}>
-          <GainSection theme={theme} gains={gains} setGain={setGain} title="Trajectory Navigator (Pure Pursuit)" paramNote="PARAM_TRAJ_* (0x24, 0x25, 0x27)" keys={[
-            ['traj_cruise',          'Cruise (m/s)',          0, 1.0, 0.01],
-            ['traj_lookahead',       'Lookahead Lᴅ (m)',     0.1, 2.0, 0.01],
-            ['traj_curv_slowdown',   'Curv. slowdown g (m)',  0,  2.0, 0.01],
-          ]} />
           <button onClick={sendGains} style={{
             padding: '14px',
             background: sent === 'ok' ? theme.success : sent === 'err' ? theme.danger : theme.accent,
@@ -258,7 +253,7 @@ function UnsupervisedTab({ telem, setFunc, setMode, theme }) {
   const [confirmed, setConfirmed] = React.useState(false);
   const [deployed, setDeployed] = React.useState(false);
 
-  const eligibleFuncs = ['LINE_FOLLOW', 'TRAJECTORY_FOLLOW', 'STANDBY'];
+  const eligibleFuncs = ['LINE_FOLLOW', 'STANDBY'];
 
   async function deploy() {
     setDeployed(true);
@@ -290,7 +285,7 @@ function UnsupervisedTab({ telem, setFunc, setMode, theme }) {
                 <input type="radio" name="func" value={f} checked={selectedFunc === f} onChange={() => !deployed && setSelectedFunc(f)} style={{ accentColor: theme.accent }} />
                 <span style={{ fontFamily: theme.monoFont, fontWeight: 600, fontSize: '12px', color: selectedFunc === f ? theme.accent : theme.fg }}>{f}</span>
                 <span style={{ fontSize: '9px', fontFamily: theme.monoFont, color: theme.muted, marginLeft: 'auto' }}>
-                  {f === 'LINE_FOLLOW' ? 'FUNC_LINE_FOLLOW (0x02)' : f === 'TRAJECTORY_FOLLOW' ? 'FUNC_TRAJECTORY_FOLLOW (0x03)' : 'FUNC_STANDBY (0x00)'}
+                  {f === 'LINE_FOLLOW' ? 'FUNC_LINE_FOLLOW (0x02)' : 'FUNC_STANDBY (0x00)'}
                 </span>
               </label>
             ))}
@@ -376,7 +371,7 @@ function CommsTab({ telem, connected, onConnect, onDisconnect, wsUrl, setWsUrl, 
           <div style={{ fontSize: '10px', letterSpacing: '0.12em', color: theme.muted, fontFamily: theme.monoFont, textTransform: 'uppercase', marginBottom: '12px' }}>Frame Format</div>
           <div style={{ fontFamily: theme.monoFont, fontSize: '11px', color: theme.fg, lineHeight: 2, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 20px' }}>
             <div>Magic: <span style={{ color: theme.accent }}>0xAA 0x56</span></div>
-            <div>Version: <span style={{ color: theme.accent }}>0x01</span></div>
+            <div>Version: <span style={{ color: theme.accent }}>0x04</span></div>
             <div>Overhead: <span style={{ color: theme.accent }}>8 bytes</span></div>
             <div>Max payload: <span style={{ color: theme.accent }}>255 bytes</span></div>
             <div>CRC: <span style={{ color: theme.accent }}>CRC16-CCITT</span></div>
@@ -385,8 +380,8 @@ function CommsTab({ telem, connected, onConnect, onDisconnect, wsUrl, setWsUrl, 
             <div>HB timeout: <span style={{ color: theme.accent }}>1000 ms</span></div>
             <div>Grace period: <span style={{ color: theme.accent }}>3000 ms</span></div>
             <div>UART baud: <span style={{ color: theme.accent }}>921600</span></div>
-            <div>ACK timeout: <span style={{ color: theme.accent }}>50 ms</span></div>
-            <div>ACK retries: <span style={{ color: theme.accent }}>3</span></div>
+            <div>ACK timeout: <span style={{ color: theme.accent }}>1000 ms</span></div>
+            <div>WS port: <span style={{ color: theme.accent }}>8765 (/ws)</span></div>
           </div>
         </div>
 
@@ -414,22 +409,22 @@ function CommsTab({ telem, connected, onConnect, onDisconnect, wsUrl, setWsUrl, 
 // ── Ramp Tab ─────────────────────────────────────────────────────────────────
 // Motion-profile editor. Shapes the chassis-level (v, ω) setpoint between the
 // navigator and the cascade controller. Applies uniformly to REMOTE_CONTROL,
-// LINE_FOLLOW, TRAJECTORY_FOLLOW. See architecture.md §Motion Profiling.
+// LINE_FOLLOW. See architecture.md §Motion Profiling.
 function RampTab({ theme, agv, connected }) {
   const SHAPES = ['LINEAR', 'SCURVE', 'EXPONENTIAL', 'CUSTOM'];
   const SHAPE_ID = { LINEAR: 0, SCURVE: 1, EXPONENTIAL: 2, CUSTOM: 3 };
 
-  const [shape, setShape] = React.useState('LINEAR');
-  const [params, setParams] = React.useState({
+  const [shape, setShape] = usePersistentState('ramp.shape', 'EXPONENTIAL');
+  const [params, setParams] = usePersistentState('ramp.params', {
     accel_lin: 0.8,   // m/s²    PARAM_MAX_LINEAR_ACCEL  (0x03)
     accel_ang: 2.0,   // rad/s²  PARAM_MAX_ANGULAR_ACCEL (0x04)
     jerk_lin:  4.0,   // m/s³    PARAM_RAMP_JERK_LIN     (0x41)
     jerk_ang: 10.0,   // rad/s³  PARAM_RAMP_JERK_ANG     (0x42)
-    tau_lin:   0.30,  // s       PARAM_RAMP_TAU_LIN      (0x43)
-    tau_ang:   0.20,  // s       PARAM_RAMP_TAU_ANG      (0x44)
+    tau_lin:   0.01,  // s       PARAM_RAMP_TAU_LIN      (0x43)
+    tau_ang:   0.01,  // s       PARAM_RAMP_TAU_ANG      (0x44)
   });
   // Custom curve: control points (s, f) including endpoints (0,0) and (1,1).
-  const [points, setPoints] = React.useState([
+  const [points, setPoints] = usePersistentState('ramp.points', [
     { s: 0.00, f: 0.00 },
     { s: 0.30, f: 0.10 },
     { s: 0.70, f: 0.90 },

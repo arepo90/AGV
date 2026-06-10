@@ -1,4 +1,4 @@
-# function: 0=STANDBY, 1=REMOTE_CONTROL, 2=LINE_FOLLOW, 3=TRAJECTORY_FOLLOW
+# function: 0=STANDBY, 1=REMOTE_CONTROL, 2=LINE_FOLLOW
 uint8 function
 ---
 bool success

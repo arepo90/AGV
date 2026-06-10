@@ -31,10 +31,10 @@ from agv_msgs.msg import (
 )
 from agv_msgs.srv import (
     SetMode, SetFunction, VirtualEstop, OverrideEstopSource, OverrideCaution,
-    StartTare, ResetOdometry, QtrCalibrate, LoadTrajectory, LoadRampCurve,
+    StartTare, ResetOdometry, LoadRampCurve,
     LogDump, LogClear, SoftReset, ClearAllEstop,
 )
-from agv_msgs.msg import TrajectoryPoint, RampPoint
+from agv_msgs.msg import RampPoint
 
 from . import frame
 from . import protocol as proto
@@ -88,8 +88,6 @@ class WsBridgeNode(Node):
                 OverrideCaution, '/agv/override_caution'),
             proto.CMD_START_TARE: self.create_client(StartTare, '/agv/start_tare'),
             proto.CMD_RESET_ODOMETRY: self.create_client(ResetOdometry, '/agv/reset_odometry'),
-            proto.CMD_QTR_CALIBRATE: self.create_client(QtrCalibrate, '/agv/qtr_calibrate'),
-            proto.CMD_LOAD_TRAJECTORY: self.create_client(LoadTrajectory, '/agv/load_trajectory'),
             proto.CMD_LOAD_RAMP_CURVE: self.create_client(LoadRampCurve, '/agv/load_ramp_curve'),
             proto.CMD_LOG_DUMP_REQUEST: self.create_client(LogDump, '/agv/log_dump'),
             proto.CMD_LOG_CLEAR: self.create_client(LogClear, '/agv/log_clear'),
@@ -159,10 +157,7 @@ class WsBridgeNode(Node):
     def _on_sensors(self, msg: TlmSensors) -> None:
         s = proto.TlmSensors(
             load_cells=tuple(msg.load_cells),
-            imu_gyro_bias_dps=msg.imu_gyro_bias_dps, imu_pitch_deg=msg.imu_pitch_deg,
-            imu_roll_deg=msg.imu_roll_deg, imu_status=msg.imu_status,
-            tof_mm=tuple(msg.tof_mm),
-            batt_3s_mv=msg.batt_3s_mv, batt_6s_mv=msg.batt_6s_mv,
+            batt_3s_mv=msg.batt_3s_mv,
             lidar_mm=tuple(msg.lidar_mm),
         )
         self._broadcast(proto.PKT_TLM_SENSORS, s.to_bytes())
@@ -354,7 +349,8 @@ def _build_request_for_subtype(sub: int, body: bytes):
         if len(body) < 1:
             return None
         req = OverrideEstopSource.Request()
-        req.source_mask = body[0]
+        # u16 little-endian; the high byte carries battery (bit 8) + LiDAR (bit 9).
+        req.source_mask = body[0] | (body[1] << 8 if len(body) >= 2 else 0)
         return req
     if sub == proto.CMD_OVERRIDE_CAUTION:
         if len(body) < 4:
@@ -366,24 +362,6 @@ def _build_request_for_subtype(sub: int, body: bytes):
         return StartTare.Request()
     if sub == proto.CMD_RESET_ODOMETRY:
         return ResetOdometry.Request()
-    if sub == proto.CMD_QTR_CALIBRATE:
-        if len(body) < 1:
-            return None
-        req = QtrCalibrate.Request()
-        req.op = body[0]
-        return req
-    if sub == proto.CMD_LOAD_TRAJECTORY:
-        if len(body) < 1:
-            return None
-        op = body[0]
-        req = LoadTrajectory.Request()
-        req.op = op
-        if op == 1:
-            if len(body) < 1 + 8:
-                return None
-            x, y = struct.unpack('<ff', body[1:9])
-            req.point = TrajectoryPoint(x=float(x), y=float(y))
-        return req
     if sub == proto.CMD_LOAD_RAMP_CURVE:
         if len(body) < 1:
             return None

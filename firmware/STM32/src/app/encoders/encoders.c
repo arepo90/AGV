@@ -19,17 +19,21 @@ void encoders_init(void) {
     encoders_reset();
 }
 
+/* Logical side → hardware timer from config (ENCODER_TIM_*). */
+#define QENC_CH(side) ((side) == SIDE_LEFT ? (uint8_t)ENCODER_TIM_LEFT \
+                                           : (uint8_t)ENCODER_TIM_RIGHT)
+
 void encoders_reset(void) {
     s_count[SIDE_LEFT]   = 0;
     s_count[SIDE_RIGHT]  = 0;
-    s_last[SIDE_LEFT]    = qenc_raw(1);
-    s_last[SIDE_RIGHT]   = qenc_raw(0);
+    s_last[SIDE_LEFT]    = qenc_raw(QENC_CH(SIDE_LEFT));
+    s_last[SIDE_RIGHT]   = qenc_raw(QENC_CH(SIDE_RIGHT));
     s_vel_mps[SIDE_LEFT]  = 0.0f;
     s_vel_mps[SIDE_RIGHT] = 0.0f;
 }
 
-static void update_side(side_t side, uint8_t ch, bool invert, float dt_s) {
-    uint16_t now = qenc_raw(ch == 0 ? 1 : 0);
+static void update_side(side_t side, bool invert, float dt_s) {
+    uint16_t now = qenc_raw(QENC_CH(side));
     /* int16 cast handles wrap regardless of timer width. */
     int32_t d = (int16_t)(now - s_last[side]);
     s_last[side] = now;
@@ -44,8 +48,8 @@ static void update_side(side_t side, uint8_t ch, bool invert, float dt_s) {
 
 void encoders_tick(float dt_s) {
     if (dt_s <= 0.0f) return;
-    update_side(SIDE_LEFT,  0, (ENCODER_INVERT_LEFT  != 0), dt_s);
-    update_side(SIDE_RIGHT, 1, (ENCODER_INVERT_RIGHT != 0), dt_s);
+    update_side(SIDE_LEFT,  (ENCODER_INVERT_LEFT  != 0), dt_s);
+    update_side(SIDE_RIGHT, (ENCODER_INVERT_RIGHT != 0), dt_s);
 }
 
 int32_t encoders_count(side_t side)        { return s_count[side]; }

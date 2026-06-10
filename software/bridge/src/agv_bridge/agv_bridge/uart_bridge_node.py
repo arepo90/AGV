@@ -4,7 +4,7 @@ of truth for the firmware protocol on the ROS side.
 Inbound (firmware → ROS):
   * PKT_TLM_CORE    → /agv/core    + /agv/odom (nav_msgs/Odometry)
   * PKT_TLM_DRIVE   → /agv/drive
-  * PKT_TLM_SENSORS → /agv/sensors + /agv/imu (sensor_msgs/Imu)
+  * PKT_TLM_SENSORS → /agv/sensors
   * PKT_TLM_QTR     → /agv/qtr
   * PKT_LOG         → /agv/log
   * PKT_ACK/NACK    → resolves the matching pending command future
@@ -36,7 +36,6 @@ import serial
 
 from geometry_msgs.msg import Twist, Quaternion
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import Imu
 from std_msgs.msg import Empty
 
 from agv_msgs.msg import (
@@ -45,7 +44,7 @@ from agv_msgs.msg import (
 )
 from agv_msgs.srv import (
     SetMode, SetFunction, VirtualEstop, OverrideEstopSource, OverrideCaution,
-    StartTare, ResetOdometry, QtrCalibrate, LoadTrajectory, LoadRampCurve,
+    StartTare, ResetOdometry, LoadRampCurve,
     LogDump, LogClear, SoftReset, ClearAllEstop,
 )
 
@@ -67,7 +66,7 @@ class UartBridgeNode(Node):
     def __init__(self) -> None:
         super().__init__('uart_bridge')
 
-        self.declare_parameter('serial_port', '/dev/ttyUSB0')
+        self.declare_parameter('serial_port', '/dev/agv-esp32')
         self.declare_parameter('baud', 921600)
         self.declare_parameter('frame_id', 'base_link')
 
@@ -92,15 +91,14 @@ class UartBridgeNode(Node):
                                                name='uart-reader', daemon=True)
 
         # ---- Publishers --------------------------------------------------
-        # Telemetry streams mirror the firmware packets 1:1; /agv/odom and
-        # /agv/imu are standard ROS types derived from CORE/SENSORS for tooling.
+        # Telemetry streams mirror the firmware packets 1:1; /agv/odom is
+        # a standard ROS type derived from CORE for tooling.
         cb = ReentrantCallbackGroup()
         self._pub_core = self.create_publisher(TlmCore, '/agv/core', 50)
         self._pub_drive = self.create_publisher(TlmDrive, '/agv/drive', 50)
         self._pub_sensors = self.create_publisher(TlmSensors, '/agv/sensors', 20)
         self._pub_qtr = self.create_publisher(TlmQtr, '/agv/qtr', 50)
         self._pub_odom = self.create_publisher(Odometry, '/agv/odom', 50)
-        self._pub_imu = self.create_publisher(Imu, '/agv/imu', 20)
         self._pub_log = self.create_publisher(LogEntry, '/agv/log', 100)
 
         # ---- Subscribers (ROS → UART) -----------------------------------
@@ -124,10 +122,6 @@ class UartBridgeNode(Node):
         self.create_service(StartTare, '/agv/start_tare', self._svc_start_tare, callback_group=cb)
         self.create_service(ResetOdometry, '/agv/reset_odometry',
                             self._svc_reset_odometry, callback_group=cb)
-        self.create_service(QtrCalibrate, '/agv/qtr_calibrate',
-                            self._svc_qtr_calibrate, callback_group=cb)
-        self.create_service(LoadTrajectory, '/agv/load_trajectory',
-                            self._svc_load_trajectory, callback_group=cb)
         self.create_service(LoadRampCurve, '/agv/load_ramp_curve',
                             self._svc_load_ramp_curve, callback_group=cb)
         self.create_service(LogDump, '/agv/log_dump', self._svc_log_dump, callback_group=cb)
@@ -303,31 +297,9 @@ class UartBridgeNode(Node):
         msg.header.stamp = now
         msg.header.frame_id = self._frame_id
         msg.load_cells = list(s.load_cells)
-        msg.imu_gyro_bias_dps = s.imu_gyro_bias_dps
-        msg.imu_pitch_deg = s.imu_pitch_deg
-        msg.imu_roll_deg = s.imu_roll_deg
-        msg.imu_status = s.imu_status
-        msg.tof_mm = list(s.tof_mm)
         msg.batt_3s_mv = s.batt_3s_mv
-        msg.batt_6s_mv = s.batt_6s_mv
         msg.lidar_mm = list(s.lidar_mm)
         self._pub_sensors.publish(msg)
-
-        # Standard ROS IMU. The MPU6050 has no magnetometer, so there is no
-        # absolute yaw: orientation carries only the gravity-referenced roll/pitch
-        # (yaw flagged unobservable by a huge covariance). The fused heading lives
-        # on /agv/odom (odom_theta) instead.
-        imu = Imu()
-        imu.header.stamp = now
-        imu.header.frame_id = self._frame_id
-        imu.orientation = _rpy_to_quat(math.radians(s.imu_roll_deg),
-                                       math.radians(s.imu_pitch_deg), 0.0)
-        imu.orientation_covariance = [0.05, 0.0, 0.0,
-                                      0.0, 0.05, 0.0,
-                                      0.0, 0.0, 1.0e6]
-        imu.angular_velocity_covariance[0] = -1.0
-        imu.linear_acceleration_covariance[0] = -1.0
-        self._pub_imu.publish(imu)
 
     def _handle_qtr(self, payload: bytes) -> None:
         try:
@@ -421,21 +393,6 @@ class UartBridgeNode(Node):
     def _svc_reset_odometry(self, _request, response):
         return self._do_cmd(bytes([proto.CMD_RESET_ODOMETRY]), response)
 
-    def _svc_qtr_calibrate(self, request, response):
-        return self._do_cmd(bytes([proto.CMD_QTR_CALIBRATE, request.op & 0xFF]), response)
-
-    def _svc_load_trajectory(self, request, response):
-        if request.op == 0:
-            payload = bytes([proto.CMD_LOAD_TRAJECTORY, 0])
-        elif request.op == 1:
-            payload = bytes([proto.CMD_LOAD_TRAJECTORY, 1]) + struct.pack(
-                '<ff', float(request.point.x), float(request.point.y))
-        else:
-            response.success = False
-            response.nack_code = proto.NACK_UNKNOWN_SUBTYPE
-            return response
-        return self._do_cmd(payload, response)
-
     def _svc_load_ramp_curve(self, request, response):
         op = request.op
         if op in (0, 2, 3):
@@ -477,18 +434,6 @@ def _yaw_to_quat(yaw_rad: float) -> Quaternion:
     q = Quaternion()
     q.z = math.sin(yaw_rad * 0.5)
     q.w = math.cos(yaw_rad * 0.5)
-    return q
-
-
-def _rpy_to_quat(roll: float, pitch: float, yaw: float) -> Quaternion:
-    cr, sr = math.cos(roll * 0.5), math.sin(roll * 0.5)
-    cp, sp = math.cos(pitch * 0.5), math.sin(pitch * 0.5)
-    cy, sy = math.cos(yaw * 0.5), math.sin(yaw * 0.5)
-    q = Quaternion()
-    q.w = cr * cp * cy + sr * sp * sy
-    q.x = sr * cp * cy - cr * sp * sy
-    q.y = cr * sp * cy + sr * cp * sy
-    q.z = cr * cp * sy - sr * sp * cy
     return q
 
 

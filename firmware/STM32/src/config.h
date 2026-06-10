@@ -24,14 +24,17 @@
 #define DISABLE_ESTOP               0
 #define DISABLE_PROXIMITY           0
 #define DISABLE_LOAD_CELLS          0
-#define DISABLE_IMU                 1
-#define DISABLE_TOF                 0       /* VL53L0X ranging via I2C mux */
-#define DISABLE_BATTERY             0       /* INA219 3S/6S bus voltage */
+#define DISABLE_BATTERY             0       /* INA219 3S bus voltage */
 #define DISABLE_CURRENT_SENSE       0
 #define DISABLE_ODOMETRY            0
 #define DISABLE_TELEMETRY           0
 #define DISABLE_LOG_FORWARDING      0       /* still recorded, just not sent */
 #define DISABLE_LIDAR               1       /* Jetson-segmented LaserScan (pushed over UART) */
+
+/* Bench-only: 1 = boot straight into the I2C bus scanner (app/i2cscan), which
+ * prints bus health + an address scan over USART1 and never returns. Leave 0
+ * for normal firmware. */
+#define I2C_SCAN                    0
 
 /* ---- Clocks --------------------------------------------------------------- */
 #define SYSCLK_HZ                   48000000u
@@ -46,7 +49,7 @@
 /* ---- Packet protocol ------------------------------------------------------ */
 #define PROTO_MAGIC0                0xAAu
 #define PROTO_MAGIC1                0x56u
-#define PROTO_VERSION               0x03u    /* v3: +led_indicator_cfg in CORE, lidar tail in SENSORS, PKT_LIDAR_SEGMENTS */
+#define PROTO_VERSION               0x04u    /* v4: TOF + 6S battery removed (SENSORS = 18B fixed + lidar tail) */
 #define PROTO_MAX_PAYLOAD           255u
 #define PROTO_FRAME_OVERHEAD        8u       /* magic(2)+ver+seq+type+len+crc(2) */
 #define PROTO_MAX_FRAME             (PROTO_MAX_PAYLOAD + PROTO_FRAME_OVERHEAD)
@@ -64,13 +67,12 @@
 #define TLM_CORE_HZ_MOVING          50u      /* operational state + pose while navigating */
 #define TLM_CORE_HZ_IDLE            10u      /* ...and while in STANDBY */
 #define TLM_DRIVE_HZ                20u      /* per-wheel control internals (raise to tune PI) */
-#define TLM_SENSORS_HZ              5u       /* load cells + IMU orientation */
-/* QTR stream is sent at the control rate while LINE_FOLLOW or QTR-cal is active,
- * and not at all otherwise. */
+#define TLM_SENSORS_HZ              5u       /* load cells + battery + LiDAR echo */
+/* QTR stream is sent at the control rate while LINE_FOLLOW is active, and not at
+ * all otherwise. */
 
 /* ---- Sensor poll rates ---------------------------------------------------- */
 #define ADC_SCAN_HZ                 100u     /* motor current + QTR multi-channel scan */
-#define IMU_READ_HZ                 100u     /* MPU6050 gyro poll rate (internal DLPF runs at 1 kHz) */
 #define HX711_RATE_STANDBY_HZ       30u      /* also weight-setting period (see UNVERIFIED) */
 #define HX711_RATE_MOVING_HZ        2u
 
@@ -82,8 +84,22 @@
 #define ENCODER_COUNTS_PER_REV      (ENCODER_PPR * ENCODER_QUADRATURE_FACTOR)
 #define ENCODER_VEL_LPF_ALPHA       0.3f     /* v = α·new + (1-α)·prev; lower = smoother */
 
-#define MOTOR_INVERT_LEFT           0
+/* ---- Drive channel mapping -------------------------------------------------
+ * Logical sides (LEFT/RIGHT) map to hardware channels here instead of being
+ * hard-coded in control/encoders. Hardware channel 0 = TIM1_CH1 PWM (PA8) +
+ * DIR PB0; channel 1 = TIM1_CH4 PWM (PA11) + DIR PB2. Encoder timer 0 = TIM2
+ * (PA0/PA1); timer 1 = TIM3 (PA6/PA7).
+ *
+ * The defaults below reproduce the bench-verified arrangement that previously
+ * lived as a hard-coded swap in control.c/encoders.c (sides crossed, left
+ * chain inverted). UNVERIFIED against physical left/right — correct these four
+ * pairs after a drive test (fwd cmd → both wheels forward; +ω → CCW). */
+#define MOTOR_CH_LEFT               1
+#define MOTOR_CH_RIGHT              0
+#define MOTOR_INVERT_LEFT           1
 #define MOTOR_INVERT_RIGHT          0
+#define ENCODER_TIM_LEFT            1
+#define ENCODER_TIM_RIGHT           0
 #define ENCODER_INVERT_LEFT         1
 #define ENCODER_INVERT_RIGHT        0
 
@@ -98,32 +114,40 @@
  * encoder velocity is too quantised to differentiate. Independent gains per
  * wheel absorb mechanical asymmetry. The feedforward carries the steady-state
  * (≈ duty needed per m/s ≈ 1/MAX_LINEAR_SPEED_MPS); the integrator only trims. */
-#define WHEEL_KP_LEFT               1.0f
+#define WHEEL_KP_LEFT               2.0f
 #define WHEEL_KI_LEFT               0.0f
 #define WHEEL_KFF_LEFT              0.0f
-#define WHEEL_KP_RIGHT              1.0f
+#define WHEEL_KP_RIGHT              2.0f
 #define WHEEL_KI_RIGHT              0.0f
 #define WHEEL_KFF_RIGHT             0.0f
-#define WHEEL_I_LIMIT               0.0f     /* integral clamp, in duty units */
+#define WHEEL_I_LIMIT               0.8f     /* raw ∫e·dt clamp (pre-Ki): duty contribution ≤ Ki × this */
 
 /* ---- Line-follow PID (the only PID left; output is ω) --------------------- */
-#define LINE_FOLLOW_CRUISE_MPS      0.3f
-#define LINE_FOLLOW_KP              1.0f
+#define LINE_FOLLOW_CRUISE_MPS      0.2f
+#define LINE_FOLLOW_KP              3.0f
 #define LINE_FOLLOW_KI              0.0f
 #define LINE_FOLLOW_KD              0.0f
 
-/* ---- Trajectory (pure pursuit) -------------------------------------------- */
-#define PURE_PURSUIT_LOOKAHEAD_M    0.50f
-#define TRAJECTORY_CRUISE_MPS       0.3f
-#define TRAJECTORY_CURV_SLOWDOWN    0.5f     /* v = cruise / (1 + g·|κ|); g in m */
-#define MAX_WAYPOINTS               32u
-#define WAYPOINT_REACH_RADIUS_M     0.05f
+/* ---- T-junction turnaround -------------------------------------------------
+ * A wide perpendicular bar at the end of the line ("T") blacks out all/most of
+ * the array; the AGV then turns 180° on its own axis and follows the line back.
+ * The turn is odometry-gated (encoder heading), not timed, so it self-adjusts
+ * to the caution modifier and battery sag — it therefore needs ODOMETRY enabled
+ * (with it disabled, the turn times out into LINE_LOST). Detection is absolute:
+ * the auto-ranging centroid can't tell all-black from all-white, so a sensor
+ * counts as "black" above LINE_T_BLACK_COUNTS (runtime-tunable, PARAM 0x27). */
+#define LINE_T_BLACK_COUNTS         4090    /* ADC counts (dark reads high); tune on the bench */
+#define LINE_T_MIN_SENSORS          6u       /* ≥ this many black sensors = T bar */
+#define LINE_T_DEBOUNCE_TICKS       3u       /* consecutive control frames before triggering */
+#define LINE_TURN_CCW               1        /* 1 = turn left at the T, 0 = right */
+#define LINE_TURN_OMEGA_RADPS       1.0f     /* on-axis turn rate (pre caution clamp) */
+#define LINE_TURN_BLIND_RAD         1f    /* ~150°: minimum sweep before looking for the line */
+#define LINE_TURN_MAX_RAD           6f    /* ~330° swept without a line → give up (LINE_LOST) */
+#define LINE_TURN_TIMEOUT_MS        8000u    /* hard cap (covers frozen odometry) */
 
-/* ---- QTR-8A reflectance (used when no flash calibration loaded) ----------- */
-#define QTR_DEFAULT_WHITE           300u     /* counts on a white surface */
-#define QTR_DEFAULT_BLACK           3000u    /* counts on a black line */
+/* ---- QTR-8A line sensor (per-frame auto-ranging; no calibration) ---------- */
 #define QTR_INVERT_ARRAY            0        /* 1 if sensor 7 is leftmost */
-#define QTR_LINE_LOST_THRESHOLD     0.5f     /* sum-of-normalised below this → lost */
+#define QTR_MIN_CONTRAST_COUNTS     100u       /* line lost if (max-min) across the array < this many ADC counts (0 disables) */
 
 /* QTR_PIN_MAP — wiring remapping for analog_qtr(idx).
  * QTR_PIN_MAP[logical_idx] = ADC slot index (0..7), where each slot is a
@@ -132,37 +156,6 @@
  *   slot 2 = PC0   slot 3 = PC1   slot 4 = PC2   slot 5 = PC3
  *   slot 6 = PC4   slot 7 = PC5 */
 #define QTR_PIN_MAP                 { 2, 3, 4, 5, 0, 1, 7, 6}
-
-/* ---- Heading fusion (2-state Kalman filter: θ, gyro bias) -----------------
- * The MPU6050 has no magnetometer, so there is NO absolute heading reference;
- * yaw is integrated from the gyro and would drift unbounded. A 2-state linear
- * Kalman filter [θ, b] estimates and cancels the slowly-drifting gyro bias by
- * fusing two yaw-rate sources:
- *   - gyro Z          (slip-immune; biased)   → the prediction input
- *   - encoder diff ω  (bias-free; slip-prone)  → the measurement, gated off slip
- * Predict: θ += (gyro - b)·dt ; b held. Update: z observes true rate (gyro - b).
- * A zero-velocity update (ZUPT) feeds z = 0 whenever the robot is verified at
- * rest, pinning the bias each time it pauses — the practical drift bound with no
- * compass. Falls back to encoder-differential heading when the IMU is absent.
- * Position stays dead-reckoned (no sensor observes it yet); promote θ,x,y to a
- * full EKF when LiDAR/SLAM supplies an absolute fix. Tunables (rad, rad/s):
- *   Q_THETA  process noise on θ  (gyro white noise; larger → trust gyro less)
- *   Q_BIAS   bias random-walk    (larger → bias adapts faster, tracks temp drift)
- *   R_ENC    encoder yaw-rate measurement variance (larger → trust encoders less)
- *   R_ZUPT   zero-velocity measurement variance (small → snap bias hard at rest) */
-#define HEADING_KF_Q_THETA          1.0e-4f
-#define HEADING_KF_Q_BIAS           1.0e-7f
-#define HEADING_KF_R_ENC            5.0e-3f
-#define HEADING_KF_R_ZUPT           1.0e-5f
-#define HEADING_KF_P0_THETA         1.0e-2f  /* initial θ variance */
-#define HEADING_KF_P0_BIAS          1.0e-2f  /* initial bias variance (pre-convergence) */
-#define HEADING_KF_BIAS_CONVERGED   1.0e-4f  /* bias variance below this → "converged" flag */
-#define HEADING_SLIP_REJECT_RADPS   0.30f    /* |gyro - enc_ω| above this → skip enc update (slip) */
-#define ZUPT_VEL_EPS_MPS            0.01f    /* both wheel speeds below this → candidate at-rest */
-#define IMU_HEADING_SIGN            (-1.0f)  /* MPU6050 gyro-Z sign → encoder CCW convention */
-
-/* ---- IMU tilt (accel+gyro complementary; diagnostic) ---------------------- */
-#define IMU_TILT_COMP_ALPHA         0.98f    /* nearer 1 trusts the gyro; (1-α) pulls to gravity */
 
 /* ---- PWM ------------------------------------------------------------------ */
 #define PWM_FREQ_HZ                 20000u   /* 20 kHz: above audible, within Pololu G2 spec */
@@ -181,11 +174,16 @@
 #define WEIGHT_TOTAL_ESTOP_KG       100.0f
 #define WEIGHT_IMBALANCE_CAUTION    0.20f    /* corner deviation fraction → CAUTION */
 #define WEIGHT_IMBALANCE_ESTOP      0.40f    /* → CRITICAL / E-STOP */
+#define IMBALANCE_FLOOR_KG          5.0f     /* below this total, imbalance (caution + E-STOP) is noise — ignored */
 
 /* ---- Caution modifier levels ---------------------------------------------- */
 #define CAUTION_NORMAL              1.0f
 #define CAUTION_LEVEL_CAUTION       0.5f
 #define CAUTION_LEVEL_CRITICAL      0.2f
+/* A workstation OVERRIDE_CAUTION has full authority for this long after the
+ * last command, then releases back to the firmware's own per-source minimum
+ * (so a stale override from a dead workstation can't pin the modifier). */
+#define CAUTION_WS_OVERRIDE_TIMEOUT_MS  10000u
 
 /* ---- Indicator lights (ESP32 WS2812B rings) -------------------------------
  * The firmware only carries the animation style; the strips, counts, and colors
@@ -210,54 +208,17 @@
 #define PROX_ACTIVE_LOW             1        /* E18-D80NK NPN: pin low = obstacle */
 
 /* ---- I2C bus device addresses (7-bit) -------------------------------------
- * All share I2C1 (PB8/PB9). The MPU6050 (0x68) and both INA219 sit directly on
- * the bus; the four VL53L0X share the default 0x29 and are isolated by the
- * TCA9548A mux (one channel exposed at a time), so they keep that address.
- * No collisions (0x68 vs 0x40/0x41/0x70). */
-#define TCA9548A_I2C_ADDR           0x70u    /* I2C mux (A0..A2 low) */
-#define VL53L0X_I2C_ADDR            0x29u    /* default; one live per mux channel */
+ * The I2C1 bus (PB8/PB9) is currently unused — the INA219 moved to the ESP32.
+ * The HAL, scanner, and address stay for future expansion / moving it back. */
 #define INA219_3S_I2C_ADDR          0x40u    /* A0=A1=GND */
-#define INA219_6S_I2C_ADDR          0x41u    /* A0=Vs, A1=GND */
-
-/* ---- MPU6050 6-DOF IMU (gyro + accel; no magnetometer) --------------------
- * ±250 dps / ±2 g for best resolution on a slow ground robot. The DLPF is the
- * key knob in a vibrating metal enclosure: start at CFG 3 (gyro BW ≈ 44 Hz) and
- * tighten toward 5 (10 Hz) / 6 (5 Hz) if motor vibration shows in the gyro.
- * If FS_SEL/AFS_SEL change, update the matching LSB scale factors. */
-#define MPU6050_I2C_ADDR            0x68u    /* AD0 low; 0x69 if high */
-#define MPU6050_DLPF_CFG            3u       /* CONFIG[2:0]: 0/7 off, 1..6 = 188..5 Hz gyro BW */
-#define MPU6050_SMPLRT_DIV          0u       /* sample rate = 1 kHz / (1+DIV); we subsample at IMU_READ_HZ */
-#define MPU6050_GYRO_FS_SEL         0u       /* 0=±250, 1=±500, 2=±1000, 3=±2000 dps */
-#define MPU6050_ACCEL_FS_SEL        0u       /* 0=±2, 1=±4, 2=±8, 3=±16 g */
-#define MPU6050_GYRO_LSB_PER_DPS    131.0f   /* matches FS_SEL 0 (±250 dps) */
-#define MPU6050_ACCEL_LSB_PER_G     16384.0f /* matches AFS_SEL 0 (±2 g) */
-
-/* ---- TOF distance sensors (VL53L0X ×4 behind the mux) ---------------------
- * One per corner, mirroring the IR proximity arrangement but giving graduated
- * distance bands. The MINIMUM distance across all present sensors selects a
- * caution level; below the E-STOP band it asserts an auto-clearing E-STOP, just
- * like the IR ring. All bands are runtime-tunable (PARAM_TOF_*); both caution
- * and E-STOP auto-clear with no workstation action. */
-#define TOF_NUM_SENSORS             4u
-#define TOF_MUX_CH_FRONT            0u       /* mux channel per facing */
-#define TOF_MUX_CH_REAR             1u
-#define TOF_MUX_CH_LEFT             2u
-#define TOF_MUX_CH_RIGHT            3u
-#define TOF_POLL_HZ                 60u      /* aggregate; round-robin one sensor/pass → TOF_POLL_HZ/N per sensor */
-#define TOF_VALID_MAX_MM            1200u    /* readings beyond this (or status-fail) = "clear" */
-#define TOF_CAUTION_MM              800u     /* < this → CAUTION (0.5) */
-#define TOF_CRITICAL_MM             400u     /* < this → CRITICAL (0.2) */
-#define TOF_ESTOP_MM                200u     /* < this → auto-clearing E-STOP */
-#define TOF_BUDGET_US               33000u   /* VL53L0X measurement timing budget */
 
 /* ---- LiDAR distance segments (Jetson-segmented LaserScan) ------------------
  * The 2D scan lives on the Jetson; lidar_node masks a hardcoded angular sector,
  * bins the rest into fixed angular intervals (average range per interval), and
  * pushes the per-interval distances (mm) down to the STM32 in PKT_LIDAR_SEGMENTS.
- * They are treated exactly like the TOF sensors: the MINIMUM fresh segment selects
- * a caution level and, below the E-STOP band, an auto-clearing E-STOP. The
- * segments are echoed back up in TLM_SENSORS so the ESP32 ring + GUI can show them.
- * Bands default to the TOF values and are runtime-tunable (PARAM_LIDAR_*). */
+ * The MINIMUM fresh segment selects a caution level and, below the E-STOP band,
+ * an auto-clearing E-STOP. The segments are echoed back up in TLM_SENSORS so the
+ * ESP32 ring + GUI can show them. Bands are runtime-tunable (PARAM_LIDAR_*). */
 #define LIDAR_MAX_SEGMENTS          32u      /* wire/telemetry cap on interval count */
 #define LIDAR_STALE_MS              500u     /* no fresh segments within this → treat as clear */
 #define LIDAR_VALID_MAX_MM          8000u    /* "clear" sentinel; empty/absent bins report this */
@@ -266,17 +227,19 @@
 #define LIDAR_ESTOP_MM              200u     /* < this → auto-clearing E-STOP */
 
 /* ---- Battery monitor (INA219 bus voltage only — no current sense) ----------
- * Both modules read bus voltage (LSB 4 mV, BRNG=1 → 32 V FSR). The 3S rail
- * (motors + logic) gets caution then auto-clearing E-STOP on undervoltage, with
- * a recover margin so sag-under-load can't chatter. The 6S rail powers only the
- * Jetson — the STM32 cannot protect it and throttling would not help — so it is
- * display + a log warning only. Thresholds are per-pack totals (mV). */
+ * One INA219 reads 3S bus voltage (LSB 4 mV, BRNG=1 → 32 V FSR). It hangs off
+ * the ESP32's I2C; the ESP32 polls it and pushes each reading as PKT_BATTERY.
+ * The 3S rail (motors + logic) gets caution then auto-clearing E-STOP on
+ * undervoltage, with a recover margin so sag-under-load can't chatter.
+ * Thresholds are per-pack totals (mV). The 6S Jetson rail is not monitored.
+ * BATTERY_VIA_STM32_I2C = 1 revives the legacy direct driver on I2C1. */
+#define BATTERY_VIA_STM32_I2C       0
+#define BATTERY_PUSH_STALE_MS       2500u    /* no push within this → battery absent */
 #define INA219_BUS_LSB_UV           4000u    /* 4 mV per bit (BRNG=1, after >>3) */
-#define BATTERY_POLL_HZ             2u
+#define BATTERY_POLL_HZ             2u       /* legacy I2C path only; ESP32 mirrors it */
 #define BATTERY_3S_CAUTION_MV       10500u   /* ≈3.50 V/cell → CAUTION */
 #define BATTERY_3S_ESTOP_MV         9900u    /* ≈3.30 V/cell → E-STOP */
 #define BATTERY_RECOVER_MV          300u     /* hysteresis: clear only above trip + this */
-#define BATTERY_6S_WARN_MV          19800u   /* ≈3.30 V/cell → log warning (display rail) */
 #define BATTERY_MIN_VALID_MV        3000u    /* below this assume sensor absent, not flat */
 
 /* ---- Fault log ------------------------------------------------------------ */
@@ -287,8 +250,6 @@
  *  Carried over from the previous firmware; NOT checked on this hardware.
  *  Grouped here so they are trivial to correct in one place.
  * =============================================================================
- *  - HX711: 30 Hz standby reads require the chip in 80 SPS mode (RATE pin HIGH).
- *    If RATE is tied LOW (10 SPS default), set HX711_RATE_STANDBY_HZ <= 10.
  *  - Motor current scale: the old comment claimed ~40.3 mA/count but the
  *    constant is ~1.611 mA/count (≈25x apart). Verify with a known load before
  *    trusting the overcurrent trip threshold.

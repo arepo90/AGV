@@ -5,8 +5,8 @@
  *  Display-only, single page. Reads a compact, checksummed ASCII status line
  *  from the Jetson over USB serial (driven by software/bridge panel_node) and
  *  renders one OVERVIEW screen: a state banner (NORMAL / CAUTION / E-STOP) with
- *  reason + speed cap, mode/function boxes, and a bottom strip with the battery
- *  voltages on the LEFT and total cargo load on the RIGHT. Shows NO LINK if the
+ *  reason + speed cap, mode/function boxes, and a bottom strip with the 3S
+ *  battery on the LEFT and total cargo load on the RIGHT. Shows NO LINK if the
  *  feed stops for >3 s.
  *
  *  Line format (newline-terminated), parsed field-by-field:
@@ -15,8 +15,8 @@
  *  csum = 8-bit XOR of every char between 'A' and '*', two hex digits.
  *    mode 0/1; func 0..3; estop/caution u16 masks; cm = caution modifier x100;
  *    bN = pack mV; pN = % (-1 absent); cN = corner load deci-kg (kg x10).
- *  The TOF (t0..t3) and IR (ir) fields are validated for field count but not
- *  shown on this face — only the totals matter here.
+ *  The 6S battery (b6/p6 — rail removed from the product), TOF (t0..t3) and
+ *  IR (ir) fields are validated for field count but not shown on this face.
  *
  *  FONTS — one GFX font (FreeSansBold9pt7b, bundled with Adafruit_GFX) scaled
  *  x1..x3 for bold text, plus the classic 5x7 font for the tiniest labels.
@@ -57,8 +57,8 @@ struct Status {
     int  mode, func;
     unsigned estop, caution;
     int  cm;                 /* caution modifier x100 (= speed cap %) */
-    long b3, b6;             /* mV */
-    int  p3, p6;             /* % or -1 (absent) */
+    long b3;                 /* mV */
+    int  p3;                 /* % or -1 (absent) */
     int  cargo[4];           /* deci-kg, FL FR RL RR */
     char reason[24];
 };
@@ -79,8 +79,9 @@ static int8_t hexval(char c) {
 }
 
 /* Validate the checksum and split the line into `out`. The 18 numeric fields
- * must all be present; TOF/IR (indices 9..13) are skipped, only the totals are
- * kept. Returns false on any malformed input (the previous frame is retained). */
+ * must all be present; 6S/TOF/IR (indices 7..13) are skipped, only the totals
+ * are kept. Returns false on any malformed input (the previous frame is
+ * retained). */
 static bool parse_line(char *line, Status *out) {
     char *star = strchr(line, '*');
     if (!star || line[0] != 'A') return false;
@@ -103,7 +104,6 @@ static bool parse_line(char *line, Status *out) {
     out->estop = (unsigned)f[2];  out->caution = (unsigned)f[3];
     out->cm = f[4];
     out->b3 = f[5];  out->p3 = f[6];
-    out->b6 = f[7];  out->p6 = f[8];
     for (int i = 0; i < 4; i++) out->cargo[i] = f[14 + i];
     strncpy(out->reason, rs ? rs : "", sizeof out->reason - 1);
     out->reason[sizeof out->reason - 1] = '\0';
@@ -204,20 +204,18 @@ static void draw_banner(const Status *c) {
     boldText(360, 66, cap, tcol, 2);
 }
 
-static void draw_battery_row(int row, const Status *c) {
-    int  y   = 206 + row * 42;
-    long mv  = row ? c->b6 : c->b3;
-    int  pct = row ? c->p6 : c->p3;
-    uint16_t bc = pct_color(pct);
+static void draw_battery(const Status *c) {
+    const int y = 216;          /* single 3S row, centred in the POWER strip */
+    uint16_t bc = pct_color(c->p3);
 
     tft.fillRect(8, y - 2, 228, 36, C_BLACK);           /* clear the row */
-    boldText(8, y, row ? "6S" : "3S", C_WHITE, 1);
+    boldText(8, y, "3S", C_WHITE, 1);
     char vv[12];
-    if (pct < 0) snprintf(vv, sizeof vv, "ABSENT");
-    else         snprintf(vv, sizeof vv, "%ld.%02ldV", mv / 1000, (mv % 1000) / 10);
+    if (c->p3 < 0) snprintf(vv, sizeof vv, "ABSENT");
+    else           snprintf(vv, sizeof vv, "%ld.%02ldV", c->b3 / 1000, (c->b3 % 1000) / 10);
     boldText(44, y, vv, bc, 1);
-    if (pct >= 0) { char pp[6]; snprintf(pp, sizeof pp, "%d%%", pct); tinyText(180, y + 5, pp, bc, 1); }
-    drawSeg(8, y + 22, 224, 8, pct, bc, 14);
+    if (c->p3 >= 0) { char pp[6]; snprintf(pp, sizeof pp, "%d%%", c->p3); tinyText(180, y + 5, pp, bc, 1); }
+    drawSeg(8, y + 22, 224, 8, c->p3, bc, 14);
 }
 
 static float cargo_total(const Status *s) {
@@ -262,8 +260,7 @@ static void page_overview(const Status *c, const Status *p, bool full) {
         boldBox(252, 160, 212, 22, (c->func >= 0 && c->func <= 3) ? FUNC_NAMES[c->func] : "?", C_WHITE, 1);
     }
 
-    if (full || c->b3 != p->b3 || c->p3 != p->p3) draw_battery_row(0, c);
-    if (full || c->b6 != p->b6 || c->p6 != p->p6) draw_battery_row(1, c);
+    if (full || c->b3 != p->b3 || c->p3 != p->p3) draw_battery(c);
 
     if (full || cargo_total(c) != cargo_total(p)) draw_cargo(c);
 }

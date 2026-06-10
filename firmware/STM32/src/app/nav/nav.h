@@ -9,7 +9,6 @@
  *    STANDBY           → (0, 0)
  *    REMOTE_CONTROL    → latest workstation (v, ω)
  *    LINE_FOLLOW       → nav_line (QTR centroid + PID)
- *    TRAJECTORY_FOLLOW → nav_traj (pure pursuit over the waypoint list)
  *
  *  Navigators are pure control laws — they never change function; the safety
  *  state machine does. nav_reset() clears navigator-internal state on E-STOP.

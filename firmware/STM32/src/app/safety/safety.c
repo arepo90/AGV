@@ -7,7 +7,6 @@
 #include "log.h"
 #include "mcu.h"
 #include "stm32f0xx.h"
-#include "tof.h"
 #include <math.h>
 
 /* ===========================================================================
@@ -57,7 +56,7 @@ bool safety_set_mode(agv_mode_t m) {
 bool safety_set_function(agv_function_t f) {
     if (f == s_func) return true;
     if (f != FUNC_STANDBY && f != FUNC_REMOTE_CONTROL &&
-        f != FUNC_LINE_FOLLOW && f != FUNC_TRAJECTORY_FOLLOW) {
+        f != FUNC_LINE_FOLLOW) {
         log_record(LOG_MOD_STATE, LOG_SEV_ERROR, LOG_CODE_ILLEGAL_TRANSITION,
                    ((uint32_t)s_func << 8) | (uint32_t)f);
         return false;
@@ -130,9 +129,10 @@ uint16_t safety_estop_sources(void)   { return s_estop; }
 
 #define CAUTION_MAX_SRC 8u
 
-static float s_level[CAUTION_MAX_SRC];
-static float s_ws_override = 1.0f;
-static bool  s_ws_override_active = false;
+static float    s_level[CAUTION_MAX_SRC];
+static float    s_ws_override = 1.0f;
+static bool     s_ws_override_active = false;
+static uint32_t s_ws_override_ms = 0;
 
 static int caution_index(caution_source_t src) {
     if (src == 0) return -1;
@@ -156,11 +156,24 @@ void safety_caution_set_ws_override(float level) {
     if (level < 0.0f) level = 0.0f;
     if (level > 1.0f) level = 1.0f;
     s_ws_override = level;
+    s_ws_override_ms = mcu_now_ms();
     s_ws_override_active = true;
 }
 
+/* The override has full authority for a bounded window after the last command,
+ * then releases back to the per-source minimum — a stale override from a dead
+ * workstation must not pin the modifier. The workstation re-sends to extend. */
+static bool ws_override_current(void) {
+    if (!s_ws_override_active) return false;
+    if ((uint32_t)(mcu_now_ms() - s_ws_override_ms) > CAUTION_WS_OVERRIDE_TIMEOUT_MS) {
+        s_ws_override_active = false;
+        return false;
+    }
+    return true;
+}
+
 float safety_caution_modifier(void) {
-    if (s_ws_override_active) return s_ws_override;   /* full authority */
+    if (ws_override_current()) return s_ws_override;   /* full authority */
     float m = CAUTION_NORMAL;
     for (uint32_t i = 0; i < CAUTION_MAX_SRC; i++)
         if (s_level[i] < m) m = s_level[i];
@@ -171,7 +184,7 @@ uint16_t safety_caution_sources(void) {
     uint16_t bits = 0;
     for (uint32_t i = 0; i < CAUTION_MAX_SRC; i++)
         if (s_level[i] < CAUTION_NORMAL) bits |= (uint16_t)(1u << i);
-    if (s_ws_override_active && s_ws_override < CAUTION_NORMAL)
+    if (ws_override_current() && s_ws_override < CAUTION_NORMAL)
         bits |= (uint16_t)CAUTION_SRC_WORKSTATION_FORCED;
     return bits;
 }
@@ -230,7 +243,7 @@ void safety_heartbeat_tick(void) {
  *  Sensor-derived monitors
  * =========================================================================== */
 
-#define IMBALANCE_FLOOR_KG  2.0f      /* below this, imbalance is just noise */
+/* IMBALANCE_FLOOR_KG (config.h) gates the imbalance check below a total load. */
 #define OVERCURRENT_TICKS   10u       /* consecutive control ticks → trip (~100 ms) */
 
 static float   s_w_caution_kg     = WEIGHT_TOTAL_CAUTION_KG;
@@ -239,14 +252,9 @@ static float   s_imbalance_caution = WEIGHT_IMBALANCE_CAUTION;
 static float   s_imbalance_estop   = WEIGHT_IMBALANCE_ESTOP;
 static uint8_t s_oc_streak[2];
 
-static uint16_t s_tof_caution_mm  = TOF_CAUTION_MM;
-static uint16_t s_tof_critical_mm = TOF_CRITICAL_MM;
-static uint16_t s_tof_estop_mm    = TOF_ESTOP_MM;
-static uint8_t  s_tof_band        = 0;     /* 0 clear,1 caution,2 critical,3 estop */
 static uint16_t s_batt_caution_mv = BATTERY_3S_CAUTION_MV;
 static uint16_t s_batt_estop_mv   = BATTERY_3S_ESTOP_MV;
 static uint8_t  s_batt_state      = 0;     /* 0 normal,1 caution,2 estop (3S, hysteretic) */
-static bool     s_batt6_low       = false;
 static uint16_t s_lidar_caution_mm  = LIDAR_CAUTION_MM;
 static uint16_t s_lidar_critical_mm = LIDAR_CRITICAL_MM;
 static uint16_t s_lidar_estop_mm    = LIDAR_ESTOP_MM;
@@ -257,9 +265,6 @@ void safety_set_weight_estop_kg(float kg)     { if (kg > 0.0f && kg < 1000.0f) s
 void safety_set_imbalance_caution(float f)    { if (f > 0.0f && f < 1.0f) s_imbalance_caution = f; }
 void safety_set_imbalance_estop(float f)      { if (f > 0.0f && f < 1.0f) s_imbalance_estop = f; }
 
-void safety_set_tof_caution_mm(float mm)      { if (mm > 0.0f && mm < 4000.0f) s_tof_caution_mm  = (uint16_t)mm; }
-void safety_set_tof_critical_mm(float mm)     { if (mm > 0.0f && mm < 4000.0f) s_tof_critical_mm = (uint16_t)mm; }
-void safety_set_tof_estop_mm(float mm)        { if (mm > 0.0f && mm < 4000.0f) s_tof_estop_mm    = (uint16_t)mm; }
 void safety_set_battery_caution_mv(float mv)  { if (mv > 5000.0f && mv < 30000.0f) s_batt_caution_mv = (uint16_t)mv; }
 void safety_set_battery_estop_mv(float mv)    { if (mv > 5000.0f && mv < 30000.0f) s_batt_estop_mv   = (uint16_t)mv; }
 
@@ -317,7 +322,8 @@ static void current_tick(void) {
     if (!analog_has_data()) return;
     for (uint32_t s = 0; s < 2; s++) {
         if (analog_current_ma(s) > MOTOR_OVERCURRENT_MA) {
-            if (++s_oc_streak[s] == OVERCURRENT_TICKS) {
+            /* Saturate the streak so a sustained trip can't wrap and re-log. */
+            if (s_oc_streak[s] < OVERCURRENT_TICKS && ++s_oc_streak[s] == OVERCURRENT_TICKS) {
                 log_record(LOG_MOD_MOTORS, LOG_SEV_CRITICAL,
                            s ? LOG_CODE_OVERCURRENT_M2 : LOG_CODE_OVERCURRENT_M1,
                            analog_current_ma(s));
@@ -330,51 +336,9 @@ static void current_tick(void) {
 #endif
 }
 
-/* TOF distance bands → caution level + auto-clearing E-STOP. The minimum range
- * over all present sensors selects the band, mirroring the IR "any-sensor" rule
- * but graduated. Both caution and E-STOP auto-clear as the obstacle recedes. */
-static void tof_tick_monitor(void) {
-#if !DISABLE_TOF
-    if (!tof_any_present()) return;
-    uint16_t d = tof_min_distance_mm();
-
-    uint8_t band = (d < s_tof_estop_mm)    ? 3u
-                 : (d < s_tof_critical_mm) ? 2u
-                 : (d < s_tof_caution_mm)  ? 1u : 0u;
-
-    switch (band) {
-    case 3:
-        safety_estop_assert(ESTOP_SRC_TOF);
-        safety_caution_set(CAUTION_SRC_TOF_NEAR, CAUTION_LEVEL_CRITICAL);
-        break;
-    case 2:
-        safety_estop_clear_autoclearing(ESTOP_SRC_TOF);
-        safety_caution_set(CAUTION_SRC_TOF_NEAR, CAUTION_LEVEL_CRITICAL);
-        break;
-    case 1:
-        safety_estop_clear_autoclearing(ESTOP_SRC_TOF);
-        safety_caution_set(CAUTION_SRC_TOF_NEAR, CAUTION_LEVEL_CAUTION);
-        break;
-    default:
-        safety_estop_clear_autoclearing(ESTOP_SRC_TOF);
-        safety_caution_clear(CAUTION_SRC_TOF_NEAR);
-        break;
-    }
-
-    if (band != s_tof_band) {
-        if (band == 0)
-            log_record(LOG_MOD_TOF, LOG_SEV_INFO, LOG_CODE_TOF_CLEARED, d);
-        else if (band > s_tof_band)
-            log_record(LOG_MOD_TOF, LOG_SEV_WARN, LOG_CODE_TOF_TRIGGERED,
-                       ((uint32_t)band << 16) | d);
-        s_tof_band = band;
-    }
-#endif
-}
-
-/* LiDAR distance bands → caution + auto-clearing E-STOP, identical policy to the
- * TOF monitor but fed by Jetson-pushed segments (min over the fresh set). A dead
- * Jetson link reports "clear" (fail-safe), so it can never latch the E-STOP. */
+/* LiDAR distance bands → caution + auto-clearing E-STOP, fed by Jetson-pushed
+ * segments (min over the fresh set). A dead Jetson link reports "clear"
+ * (fail-safe), so it can never latch the E-STOP. */
 static void lidar_tick_monitor(void) {
 #if !DISABLE_LIDAR
     bool fresh = lidar_is_fresh();
@@ -416,55 +380,61 @@ static void lidar_tick_monitor(void) {
 }
 
 /* Battery: 3S rail (motors/logic) gets a hysteretic caution→E-STOP state machine
- * so sag-under-load can't chatter; E-STOP auto-clears once recovered. The 6S rail
- * powers only the Jetson, so it is log-warning only. */
+ * so sag-under-load can't chatter; E-STOP auto-clears once recovered. */
 static void battery_tick_monitor(void) {
 #if !DISABLE_BATTERY
-    if (battery_present(BATTERY_3S)) {
-        uint16_t mv = battery_mv(BATTERY_3S);
-        uint8_t st = s_batt_state;
-        if (st == 0) {
-            if (mv < s_batt_estop_mv)        st = 2;
-            else if (mv < s_batt_caution_mv) st = 1;
-        } else if (st == 1) {
-            if (mv < s_batt_estop_mv)                          st = 2;
-            else if (mv >= s_batt_caution_mv + BATTERY_RECOVER_MV) st = 0;
-        } else { /* st == 2 */
-            if (mv >= s_batt_caution_mv + BATTERY_RECOVER_MV)  st = 0;
-            else if (mv >= s_batt_estop_mv + BATTERY_RECOVER_MV) st = 1;
-        }
-
-        switch (st) {
-        case 2:
-            safety_estop_assert(ESTOP_SRC_BATTERY_LOW);
-            safety_caution_set(CAUTION_SRC_BATTERY_LOW, CAUTION_LEVEL_CRITICAL);
-            break;
-        case 1:
-            safety_estop_clear_autoclearing(ESTOP_SRC_BATTERY_LOW);
-            safety_caution_set(CAUTION_SRC_BATTERY_LOW, CAUTION_LEVEL_CAUTION);
-            break;
-        default:
+    if (!battery_present()) {
+        /* No data is not a fault (fail-safe, like stale LiDAR): release any
+         * battery caution/E-STOP rather than latching it with nothing to
+         * recover from — the push stream going stale mid-E-STOP would
+         * otherwise wedge it. */
+        if (s_batt_state != 0) {
             safety_estop_clear_autoclearing(ESTOP_SRC_BATTERY_LOW);
             safety_caution_clear(CAUTION_SRC_BATTERY_LOW);
-            break;
+            s_batt_state = 0;
         }
-
-        if (st != s_batt_state) {
-            if (st == 0)      log_record(LOG_MOD_BATTERY, LOG_SEV_INFO,     LOG_CODE_BATTERY_RESTORED, mv);
-            else if (st == 1) log_record(LOG_MOD_BATTERY, LOG_SEV_WARN,     LOG_CODE_BATTERY_LOW,      mv);
-            else              log_record(LOG_MOD_BATTERY, LOG_SEV_CRITICAL, LOG_CODE_BATTERY_ESTOP,    mv);
-            s_batt_state = st;
-        }
+        return;
+    }
+    uint16_t mv = battery_mv();
+    /* The two thresholds arrive as separate runtime params, so the pair can be
+     * inverted (estop above caution) at any moment. Evaluate with
+     * caution >= estop, else the state-2 recovery level (caution + RECOVER)
+     * sits below the trip level and the E-STOP chatters every tick. */
+    uint16_t estop_mv   = s_batt_estop_mv;
+    uint16_t caution_mv = (s_batt_caution_mv > estop_mv) ? s_batt_caution_mv
+                                                         : estop_mv;
+    uint8_t st = s_batt_state;
+    if (st == 0) {
+        if (mv < estop_mv)        st = 2;
+        else if (mv < caution_mv) st = 1;
+    } else if (st == 1) {
+        if (mv < estop_mv)                          st = 2;
+        else if (mv >= caution_mv + BATTERY_RECOVER_MV) st = 0;
+    } else { /* st == 2 */
+        if (mv >= caution_mv + BATTERY_RECOVER_MV)  st = 0;
+        else if (mv >= estop_mv + BATTERY_RECOVER_MV) st = 1;
     }
 
-    if (battery_present(BATTERY_6S)) {
-        uint16_t mv6 = battery_mv(BATTERY_6S);
-        if (!s_batt6_low && mv6 < BATTERY_6S_WARN_MV) {
-            log_record(LOG_MOD_BATTERY, LOG_SEV_WARN, LOG_CODE_BATTERY_6S_LOW, mv6);
-            s_batt6_low = true;
-        } else if (s_batt6_low && mv6 >= BATTERY_6S_WARN_MV + BATTERY_RECOVER_MV) {
-            s_batt6_low = false;
-        }
+    switch (st) {
+    case 2:
+        safety_estop_assert(ESTOP_SRC_BATTERY_LOW);
+        safety_caution_set(CAUTION_SRC_BATTERY_LOW, CAUTION_LEVEL_CRITICAL);
+        break;
+    case 1:
+        safety_estop_clear_autoclearing(ESTOP_SRC_BATTERY_LOW);
+        safety_caution_set(CAUTION_SRC_BATTERY_LOW, CAUTION_LEVEL_CAUTION);
+        break;
+    default:
+        safety_estop_clear_autoclearing(ESTOP_SRC_BATTERY_LOW);
+        safety_caution_clear(CAUTION_SRC_BATTERY_LOW);
+        break;
+    }
+
+    if (st != s_batt_state) {
+        if (st == 0)      log_record(LOG_MOD_BATTERY, LOG_SEV_INFO,     LOG_CODE_BATTERY_RESTORED, mv);
+        else if (st == 1) log_record(LOG_MOD_BATTERY, LOG_SEV_WARN,     LOG_CODE_BATTERY_LOW,      mv);
+        else              log_record(LOG_MOD_BATTERY, LOG_SEV_CRITICAL, LOG_CODE_BATTERY_ESTOP,    mv);
+        s_batt_state = st;
     }
 #endif
 }
@@ -472,7 +442,6 @@ static void battery_tick_monitor(void) {
 void safety_monitors_tick(void) {
     cargo_tick();
     current_tick();
-    tof_tick_monitor();
     lidar_tick_monitor();
     battery_tick_monitor();
 }
@@ -488,14 +457,13 @@ void safety_init(void) {
     for (uint32_t i = 0; i < CAUTION_MAX_SRC; i++) s_level[i] = CAUTION_NORMAL;
     s_ws_override = 1.0f;
     s_ws_override_active = false;
+    s_ws_override_ms = 0;
     s_hb_last_ms = mcu_now_ms();
     s_hb_stage = 0;
     s_hb_unsupervised_due_to_timeout = false;
     s_oc_streak[0] = 0;
     s_oc_streak[1] = 0;
-    s_tof_band = 0;
     s_lidar_band = 0;
     s_batt_state = 0;
-    s_batt6_low = false;
     update_unsupervised_baseline();
 }

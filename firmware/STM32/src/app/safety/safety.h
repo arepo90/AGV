@@ -51,20 +51,17 @@ void    safety_heartbeat_tick(void);       /* call each main loop */
 uint8_t safety_heartbeat_stage(void);
 
 /* ---- Sensor-derived monitors (call at the control rate) -------------------- */
-void    safety_monitors_tick(void);        /* cargo + overcurrent + TOF + battery */
+void    safety_monitors_tick(void);        /* cargo + overcurrent + LiDAR + battery */
 void    safety_set_weight_caution_kg(float kg);
 void    safety_set_weight_estop_kg(float kg);
 void    safety_set_imbalance_caution(float frac);
 void    safety_set_imbalance_estop(float frac);
 
-/* ---- TOF distance bands + 3S low-voltage thresholds (runtime-tunable) ----- */
-void    safety_set_tof_caution_mm(float mm);
-void    safety_set_tof_critical_mm(float mm);
-void    safety_set_tof_estop_mm(float mm);
+/* ---- 3S low-voltage thresholds (runtime-tunable) --------------------------- */
 void    safety_set_battery_caution_mv(float mv);
 void    safety_set_battery_estop_mv(float mv);
 
-/* ---- LiDAR distance bands (mm, runtime-tunable; same policy as TOF) -------- */
+/* ---- LiDAR distance bands (mm, runtime-tunable) ----------------------------- */
 void    safety_set_lidar_caution_mm(float mm);
 void    safety_set_lidar_critical_mm(float mm);
 void    safety_set_lidar_estop_mm(float mm);

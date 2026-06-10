@@ -5,7 +5,7 @@
 // v2: telemetry is four rate-grouped streams (CORE/DRIVE/SENSORS/QTR).
 
 const AGV_PROTO = {
-  MAGIC0: 0xAA, MAGIC1: 0x56, VERSION: 0x03,
+  MAGIC0: 0xAA, MAGIC1: 0x56, VERSION: 0x04,
 
   // Packet types
   PKT: {
@@ -17,7 +17,7 @@ const AGV_PROTO = {
     NACK:         0x06,
     LOG:          0x08,
     TLM_DRIVE:    0x09,   // per-wheel control internals
-    TLM_SENSORS:  0x0A,   // load cells + IMU orientation
+    TLM_SENSORS:  0x0A,   // load cells + battery + LiDAR tail
     TLM_QTR:      0x0B,   // QTR raw + line position
     RESET:        0xFF,
   },
@@ -31,11 +31,10 @@ const AGV_PROTO = {
     OVERRIDE_ESTOP_SOURCE:  0x05,
     OVERRIDE_CAUTION:       0x06,
     READ_SENSOR:            0x07,
-    LOAD_TRAJECTORY:        0x08,
     START_TARE:             0x09,
     LOG_DUMP_REQUEST:       0x0A,
     LOG_CLEAR:              0x0B,
-    QTR_CALIBRATE:          0x0C,
+    /* 0x0C retired (was QTR_CALIBRATE — QTR is now self-calibrating) */
     RESET_ODOMETRY:         0x0D,   /* firmware must zero x/y/θ */
     LOAD_RAMP_CURVE:        0x0E,   /* upload custom ramp shape (op=0/1/2/3) */
   },
@@ -59,10 +58,8 @@ const AGV_PROTO = {
     LINE_KI:              0x21,
     LINE_KD:              0x22,
     LINE_CRUISE_MPS:      0x23,
-    TRAJ_CRUISE_MPS:      0x24,
-    TRAJ_LOOKAHEAD_M:     0x25,
     QTR_LINE_LOST_THRESH: 0x26,
-    TRAJ_CURV_SLOWDOWN:   0x27,
+    LINE_T_BLACK:         0x27,   // T-bar "black" ADC threshold (counts)
     WEIGHT_CAUTION_KG:    0x30,
     WEIGHT_ESTOP_KG:      0x31,
     IMBALANCE_CAUTION:    0x32,
@@ -74,10 +71,8 @@ const AGV_PROTO = {
     RAMP_TAU_ANG:         0x44,
     LED_MODE:             0x50,   // indicator-ring animation (see LED_MODE enum)
     LED_BASE:             0x51,   // reactive ring base: 0=off, 1=white
-    LED_INDICATOR_MODE:   0x52,   // reactive ring spread: 0=fixed, 1=responsive
-    TOF_CAUTION_MM:       0x60,   // VL53L0X distance bands (mm)
-    TOF_CRITICAL_MM:      0x61,
-    TOF_ESTOP_MM:         0x62,
+    LED_INDICATOR_MODE:   0x52,   // reactive ring spread bit (currently unused)
+    /* 0x60–0x62 retired (were TOF distance bands — hardware removed) */
     BATT_3S_CAUTION_MV:   0x63,   // 3S low-voltage thresholds (mV)
     BATT_3S_ESTOP_MV:     0x64,
     LIDAR_CAUTION_MM:     0x65,   // LiDAR distance bands (mm)
@@ -96,9 +91,9 @@ const AGV_PROTO = {
 
   // Mode & function IDs (match firmware enums)
   MODE: { SUPERVISED: 0x00, UNSUPERVISED: 0x01 },
-  FUNC: { STANDBY: 0x00, REMOTE_CONTROL: 0x01, LINE_FOLLOW: 0x02, TRAJECTORY_FOLLOW: 0x03 },
+  FUNC: { STANDBY: 0x00, REMOTE_CONTROL: 0x01, LINE_FOLLOW: 0x02 },
 
-  // E-STOP source bitmask (16-bit since v2.1)
+  // E-STOP source bitmask (16-bit; bit 7 retired — was TOF)
   ESTOP_SRC: {
     PROXIMITY:         0x01,
     CARGO_OVERLOAD:    0x02,
@@ -107,11 +102,11 @@ const AGV_PROTO = {
     WORKSTATION:       0x10,
     OVERCURRENT:       0x20,
     FIRMWARE_FAULT:    0x40,
-    TOF:               0x80,
     BATTERY_LOW:       0x100,
+    LIDAR:             0x200,
   },
-  // proximity | cargo_overload | cargo_imbalance | tof | battery_low
-  ESTOP_AUTOCLEAR_MASK: 0x187,
+  // proximity | cargo_overload | cargo_imbalance | battery_low | lidar
+  ESTOP_AUTOCLEAR_MASK: 0x307,
 
   // NACK codes
   NACK: {
@@ -131,8 +126,8 @@ const AGV_PROTO = {
   // Log module names
   LOG_MOD_NAMES: {
     0: 'SYSTEM', 1: 'COMMS', 2: 'MOTORS', 3: 'ENCODERS', 4: 'ADC',
-    5: 'HX711', 6: 'IMU', 7: 'PROXIMITY', 8: 'ESTOP', 9: 'HEARTBEAT',
-    10: 'STATE', 11: 'NAV', 12: 'ODOMETRY', 13: 'TOF', 14: 'BATTERY',
+    5: 'HX711', 7: 'PROXIMITY', 8: 'ESTOP', 9: 'HEARTBEAT',
+    10: 'STATE', 11: 'NAV', 12: 'ODOMETRY', 14: 'BATTERY', 15: 'LIDAR',
   },
 
   // Log code names (mirrors firmware/STM32/src/types.h log_code_t)
@@ -148,8 +143,6 @@ const AGV_PROTO = {
     0x010C: 'REMOTE_NACK',
     0x0200: 'OVERCURRENT_M1',         0x0201: 'OVERCURRENT_M2',
     0x0500: 'HX711_TIMEOUT',          0x0501: 'HX711_TARE_COMPLETE',
-    0x0600: 'IMU_I2C_NACK',           0x0601: 'IMU_I2C_TIMEOUT',
-    0x0602: 'IMU_CALIB_LOST',         0x0603: 'IMU_CALIB_GAINED',
     0x0700: 'PROX_TRIGGERED',         0x0701: 'PROX_CLEARED',
     0x0800: 'ESTOP_ASSERTED',         0x0801: 'ESTOP_CLEARED',
     0x0802: 'ESTOP_OVERRIDE',
@@ -157,18 +150,15 @@ const AGV_PROTO = {
     0x0902: 'HEARTBEAT_RESTORED',
     0x0A00: 'MODE_TRANSITION',        0x0A01: 'FUNCTION_TRANSITION',
     0x0A02: 'ILLEGAL_TRANSITION',
-    0x0B00: 'TRAJECTORY_LOADED',      0x0B01: 'WAYPOINT_REACHED',
-    0x0B02: 'TRAJECTORY_COMPLETE',    0x0B03: 'LINE_LOST',
+    0x0B03: 'LINE_LOST',              0x0B04: 'LINE_T_DETECTED',
+    0x0B05: 'LINE_REACQUIRED',        0x0B06: 'LINE_TURN_FAILED',
     0x0C00: 'ODOMETRY_RESET',
-    0x0D00: 'QTR_CAL_BEGIN',          0x0D01: 'QTR_CAL_END',
-    0x0D02: 'QTR_CAL_CANCELED',       0x0D03: 'QTR_CAL_INSUFFICIENT',
-    0x0D04: 'FLASH_WRITE_FAIL',       0x0D05: 'FLASH_LOAD_FAIL',
-    0x0D06: 'FLASH_LOAD_OK',          0x0D07: 'PARAM_APPLIED',
-    0x0E00: 'TOF_TRIGGERED',          0x0E01: 'TOF_CLEARED',
-    0x0E02: 'TOF_INIT_FAIL',          0x0E03: 'TOF_I2C_FAIL',
+    0x0D07: 'PARAM_APPLIED',
     0x0F00: 'BATTERY_LOW',            0x0F01: 'BATTERY_ESTOP',
-    0x0F02: 'BATTERY_RESTORED',       0x0F03: 'BATTERY_6S_LOW',
-    0x0F04: 'BATTERY_I2C_FAIL',
+    0x0F02: 'BATTERY_RESTORED',       0x0F04: 'BATTERY_I2C_FAIL',
+    0x0F05: 'BATTERY_STALE',
+    0x1000: 'LIDAR_TRIGGERED',        0x1001: 'LIDAR_CLEARED',
+    0x1002: 'LIDAR_STALE',
   },
 };
 
@@ -446,7 +436,7 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
     return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.VIRTUAL_ESTOP]);
   }
   function cmdOverrideEstop(srcMask) {
-    // 16-bit mask, little-endian (high byte reaches the TOF + battery sources).
+    // 16-bit mask, little-endian (high byte reaches battery bit8 / LiDAR bit9).
     return sendWithAck(AGV_PROTO.PKT.CMD,
       [AGV_PROTO.CMD.OVERRIDE_ESTOP_SOURCE, srcMask & 0xFF, (srcMask >> 8) & 0xFF]);
   }
@@ -458,10 +448,6 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
   }
   function cmdLogClear() {
     return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.LOG_CLEAR]);
-  }
-  function cmdQtrCalibrate(op = 0) {
-    /* op: 0=begin sweep, 1=save+persist, 2=cancel, 3=reset-to-defaults */
-    return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.QTR_CALIBRATE, op & 0xFF]);
   }
   function cmdResetOdometry() {
     return sendWithAck(AGV_PROTO.PKT.CMD, [AGV_PROTO.CMD.RESET_ODOMETRY]);
@@ -505,7 +491,7 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
     connect, disconnect,
     cmdSetFunction, cmdSetMode, cmdVelCmd,
     cmdVirtualEstop, cmdOverrideEstop, cmdOverrideCaution,
-    cmdStartTare, cmdLogClear, cmdQtrCalibrate, cmdResetOdometry,
+    cmdStartTare, cmdLogClear, cmdResetOdometry,
     cmdRampCurveBegin, cmdRampCurveAddPoint, cmdRampCurveCommit, cmdRampCurveCancel,
     cmdSoftReset, cmdClearAllEstop,
     sendParamUpdate, sendParamBatch,
@@ -517,10 +503,10 @@ function useAGVWebSocket({ url, onTelemetry, onLog, onAck, onNack, onConnected, 
 // object whose shape matches createMockTelemetry() so the tabs need no changes.
 //   CORE    (0x03): state, caution, chassis v/ω, pose, currents, proximity, flags
 //   DRIVE   (0x09): per-wheel target/measured velocity, duty, encoder counts
-//   SENSORS (0x0A): load cells, IMU gyro-bias + tilt + status, TOF, battery, LiDAR
+//   SENSORS (0x0A): load cells, battery, LiDAR
 //   QTR     (0x0B): 8 raw reflectance values + firmware line position
 const WHEEL_RADIUS_M = 0.10;
-const WHEEL_BASE_M   = 0.20;
+const WHEEL_BASE_M   = 0.40;   // matches firmware config.h WHEEL_BASE_M
 
 function makeEmptyTelem() {
   return {
@@ -532,17 +518,14 @@ function makeEmptyTelem() {
     position: { x: 0, y: 0, theta: 0 },
     encoders: { left: 0, right: 0, leftRpm: 0, rightRpm: 0 },
     loadCells: { fl: 0, fr: 0, rl: 0, rr: 0, total: 0, cog: { x: 0, y: 0 } },
-    imu: { gyroBias: 0, pitch: 0, roll: 0,
-           present: false, hasData: false, biasConverged: false, zuptActive: false },
     proximity: { front: false, rear: false, left: false, right: false },
-    tof: { front: 0, rear: 0, left: 0, right: 0 },   // mm
     lidar: [],                                       // segmented LaserScan distances (mm)
-    battery: { v3s: 0, v6s: 0, pct3s: null, pct6s: null },
+    battery: { v3s: 0, pct3s: null },
     current: { left: 0, right: 0 },
     qtr: [0,0,0,0,0,0,0,0],
     control: { v_target: 0, omega_target: 0 },
     motors: { dutyLeft: 0, dutyRight: 0, vLeftTarget: 0, vRightTarget: 0 },
-    flags: { adc_data: false, hx711_data: false, imu_data: false, tare_in_progress: false },
+    flags: { adc_data: false, hx711_data: false, tare_in_progress: false },
     log: { pending: 0, dropped: 0 },
     ledMode: 0,
     ledIndicatorCfg: 0,    // bit0 base (0=off,1=white), bit1 spread (0=fixed,1=responsive)
@@ -563,7 +546,6 @@ function _estopSourceLabels(mask) {
   if (mask & 0x10) out.push('Workstation command');
   if (mask & 0x20) out.push('Motor overcurrent');
   if (mask & 0x40) out.push('Firmware fault');
-  if (mask & 0x80) out.push('TOF obstacle');
   if (mask & 0x100) out.push('Battery low (3S)');
   if (mask & 0x200) out.push('LiDAR obstacle');
   return out;
@@ -602,7 +584,7 @@ function mergeCore(prev, payload) {
   const cautMod = f32(10);
   const proxBits = u16(39);
   const flags = u8(14);
-  const FUNC_NAMES = ['STANDBY','REMOTE_CONTROL','LINE_FOLLOW','TRAJECTORY_FOLLOW'];
+  const FUNC_NAMES = ['STANDBY','REMOTE_CONTROL','LINE_FOLLOW'];
 
   return {
     ...prev,
@@ -624,7 +606,7 @@ function mergeCore(prev, payload) {
     },
     flags: {
       adc_data: !!(flags & 0x01), hx711_data: !!(flags & 0x02),
-      imu_data: !!(flags & 0x04), tare_in_progress: !!(flags & 0x08),
+      tare_in_progress: !!(flags & 0x08),
     },
   };
 }
@@ -647,23 +629,19 @@ function mergeDrive(prev, payload) {
   };
 }
 
-// PKT_TLM_SENSORS — 41 fixed bytes + variable u16 LiDAR tail (firmware send_sensors()).
-// f32 gyro_bias_dps (16), pitch (20), roll (24); u8 imu_status (28); then
-// u16 tof_mm[4] (29,31,33,35), u16 batt_3s_mv (37), u16 batt_6s_mv (39),
-// then (len-41)/2 LiDAR segment distances (mm) from offset 41.
-// MPU6050: no magnetometer → no absolute yaw; fused heading is in CORE (odom θ).
+// PKT_TLM_SENSORS — 18 fixed bytes + variable u16 LiDAR tail (firmware send_sensors()).
+// Layout: f32 load_cells[4] (0..15), u16 batt_3s_mv (16),
+//         then (len-18)/2 LiDAR segment distances (mm) from offset 18.
 function mergeSensors(prev, payload) {
-  if (!payload || payload.length < 41) return prev;
+  if (!payload || payload.length < 18) return prev;
   const dv = _telemDataView(payload);
-  const f32 = (o) => dv.getFloat32(o, true), u8 = (o) => dv.getUint8(o),
-        u16 = (o) => dv.getUint16(o, true);
+  const f32 = (o) => dv.getFloat32(o, true), u16 = (o) => dv.getUint16(o, true);
 
   const fl = f32(0), fr = f32(4), rl = f32(8), rr = f32(12);
   const total = fl + fr + rl + rr;
-  const status = u8(28);
-  const v3s = u16(37), v6s = u16(39);
-  const nLidar = Math.floor((payload.length - 41) / 2);
-  const lidar = Array.from({ length: nLidar }, (_, i) => u16(41 + i * 2));
+  const v3s = u16(16);
+  const nLidar = Math.floor((payload.length - 18) / 2);
+  const lidar = Array.from({ length: nLidar }, (_, i) => u16(18 + i * 2));
   return {
     ...prev,
     loadCells: {
@@ -673,18 +651,8 @@ function mergeSensors(prev, payload) {
         y: total > 0.001 ? (rl + rr - fl - fr) / total : 0,
       },
     },
-    imu: {
-      ...prev.imu,
-      gyroBias: f32(16), pitch: f32(20), roll: f32(24),
-      present: !!(status & 0x01), hasData: !!(status & 0x02),
-      biasConverged: !!(status & 0x04), zuptActive: !!(status & 0x08),
-    },
-    tof: { front: u16(29), rear: u16(31), left: u16(33), right: u16(35) },
     lidar,
-    battery: {
-      v3s: v3s / 1000.0, v6s: v6s / 1000.0,
-      pct3s: lipoPercent(v3s, 3), pct6s: lipoPercent(v6s, 6),
-    },
+    battery: { v3s: v3s / 1000.0, pct3s: lipoPercent(v3s, 3) },
   };
 }
 

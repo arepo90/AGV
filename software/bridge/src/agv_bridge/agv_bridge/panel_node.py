@@ -16,10 +16,10 @@ Line format (newline-terminated):
   * estop/caution: 16-bit source bitmasks (0 = clear).
   * cm: caution modifier x100 (0..100) = speed cap %.
   * bN: pack mV (0 = absent); pN: 0..100 % (-1 = absent).
-  * t0..t3: corner TOF mm  (FL, FR, RL, RR  — corner-mounted, looking outward).
+  * t0..t3: retired TOF fields — always 0 (kept so the field count stays stable).
   * ir: IR-proximity bitmask (bit0 FL, bit1 FR, bit2 RL, bit3 RR).
   * c0..c3: corner load deci-kg (kg x10, FL, FR, RL, RR).
-  * reason: short text, NO comma / '*' (e.g. "TOF FL CLOSE", "CARGO IMBAL").
+  * reason: short text, NO comma / '*' (e.g. "LIDAR CLOSE", "CARGO IMBAL").
   * csum: 8-bit XOR of every char between 'A' and '*', two hex digits.
 """
 
@@ -41,26 +41,27 @@ _LIPO_CURVE = [
 ]
 
 # ---- source-mask -> short reason text -------------------------------------
-# Bit positions: TOF (estop bit7 / caution bit5) and BATTERY (estop bit8 /
-# caution bit6) are fixed by architecture.md. The remaining sources share the
-# low bits; fill these in from your config.h enum if the order differs. Order
-# matters: the FIRST set bit found wins (highest priority first).
+# Bit positions mirror firmware types.h (estop_source_t / caution_source_t).
+# Order matters: the FIRST set bit found wins (highest priority first).
 _ESTOP_BITS = [
+    (9, "LIDAR CLOSE"),
     (8, "BATTERY LOW"),
-    (7, "TOF CLOSE"),
-    (0, "OBSTACLE IR"),     # <- confirm bit vs config.h
-    (1, "CARGO OVERLOAD"),  # <- confirm
-    (2, "CARGO IMBAL"),     # <- confirm
-    (3, "OVERCURRENT"),     # <- confirm
-    (4, "HEARTBEAT"),       # <- confirm
-    (5, "WORKSTATION"),     # <- confirm
-    (6, "FIRMWARE FAULT"),  # <- confirm
+    (0, "OBSTACLE IR"),
+    (1, "CARGO OVERLOAD"),
+    (2, "CARGO IMBAL"),
+    (5, "OVERCURRENT"),
+    (3, "HEARTBEAT"),
+    (4, "WORKSTATION"),
+    (6, "FIRMWARE FAULT"),
 ]
 _CAUTION_BITS = [
+    (7, "LIDAR NEAR"),
     (6, "BATTERY LOW"),
-    (5, "TOF MID"),
-    (0, "CARGO IMBAL"),     # <- confirm
-    (1, "UNSUPERVISED"),    # <- confirm
+    (0, "CARGO OVERWEIGHT"),
+    (1, "CARGO IMBAL"),
+    (2, "UNSUPERVISED"),
+    (3, "OBSTACLE NEAR"),
+    (4, "WS OVERRIDE"),
 ]
 
 
@@ -153,11 +154,13 @@ class PanelNode(Node):
         s = self._sensors
 
         b3 = s.batt_3s_mv if s else 0
-        b6 = s.batt_6s_mv if s else 0
-        tof = list(s.tof_mm) if s else [0, 0, 0, 0]          # FL, FR, RL, RR (corners)
+        # TOF + 6S monitoring removed from the firmware; the UNO line format
+        # keeps the fields for compatibility (it renders 0 / -1 as absent).
+        b6 = 0
+        tof = [0, 0, 0, 0]
         load = list(s.load_cells) if s else [0.0, 0.0, 0.0, 0.0]  # FL, FR, RL, RR kg
         p3 = _lipo_percent(b3, self._cells_3s)
-        p6 = _lipo_percent(b6, self._cells_6s)
+        p6 = -1
         cm = int(round(max(0.0, min(1.0, c.caution_modifier)) * 100))
 
         # IR proximity: pull the 4 corner bits out of proximity_obstructed.

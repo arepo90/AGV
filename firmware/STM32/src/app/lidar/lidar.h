@@ -11,13 +11,13 @@
  *  angular sector, bins the remainder into fixed angular intervals (average
  *  range per interval), and pushes the per-interval distances (mm) down to the
  *  STM32 in PKT_LIDAR_SEGMENTS. This module is purely the receive-side buffer —
- *  the analogue of app/tof, but the "sensor" is upstream over UART rather than
+ *  a distance-band safety input whose "sensor" is upstream over UART rather than
  *  on the I2C bus.
  *
  *  Freshness is fail-safe: if no segment frame has arrived within LIDAR_STALE_MS,
  *  every reading reports "clear" (LIDAR_VALID_MAX_MM) so a dead Jetson link can
  *  never latch an E-STOP. The threshold→caution/E-STOP policy lives in safety.c
- *  (mirroring the TOF monitor); this module only stores and reports.
+ *  this module only stores and reports.
  * =============================================================================
  */
 

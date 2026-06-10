@@ -5,10 +5,11 @@
 #include <stdbool.h>
 
 /* =============================================================================
- *  I2C1 master (PB8 SCL / PB9 SDA, AF1), 400 kHz fast mode.  (hal tier)
+ *  I2C1 master (PB8 SCL / PB9 SDA, AF1), 100 kHz standard mode.  (hal tier)
  *
  *  Blocking transfers with a cycle-bounded timeout. Returns false on NACK,
  *  arbitration loss, bus error, or timeout — the caller decides what to log.
+ *  A failed transfer is aborted with a forced STOP so the bus is usable again.
  *  External 4.7 kΩ pull-ups are assumed (open-drain, no internal pulls).
  * =============================================================================
  */

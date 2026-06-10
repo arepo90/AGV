@@ -19,7 +19,6 @@ set(msg_files
   msg/LogEntry.msg
   msg/ParamUpdate.msg
   msg/ParamUpdateBatch.msg
-  msg/TrajectoryPoint.msg
   msg/RampPoint.msg
 )
 
@@ -31,8 +30,6 @@ set(srv_files
   srv/OverrideCaution.srv
   srv/StartTare.srv
   srv/ResetOdometry.srv
-  srv/QtrCalibrate.srv
-  srv/LoadTrajectory.srv
   srv/LoadRampCurve.srv
   srv/LogDump.srv
   srv/LogClear.srv

@@ -57,12 +57,17 @@ def generate_launch_description():
     lidar_mask_max_arg = DeclareLaunchArgument(
         'lidar_mask_max_deg', default_value='-1.0',
         description='LiDAR occluded-sector end Y°.',
-    )
+    )   
     enable_lidar_arg = DeclareLaunchArgument(
         'enable_lidar', default_value='false',
         description='Start lidar_node. Off by default — the LiDAR is not connected yet. '
                     'Re-enable with enable_lidar:=true (and set DISABLE_LIDAR=0 in the STM32 '
                     'config.h so the firmware acts on the segments).',
+    )
+    song_path_arg = DeclareLaunchArgument(
+        'song_path', default_value='/home/arepo/AGV/software/bridge/src/agv_bridge/resource/song.mp3',
+        description='Audio file played by jukebox_node while REMOTE_CONTROL motion '
+                    'commands are flowing (any SDL_mixer-decodable format).',
     )
 
     uart_node = Node(
@@ -114,11 +119,22 @@ def generate_launch_description():
         }],
     )
 
+    jukebox_node = Node(
+        package='agv_bridge',
+        executable='jukebox_node',
+        name='jukebox_node',
+        output='screen',
+        parameters=[{
+            'song_path': LaunchConfiguration('song_path'),
+        }],
+    )
+
     return LaunchDescription([
         serial_port_arg, baud_arg,
         ws_host_arg, ws_port_arg, ws_path_arg,
         uno_port_arg, panel_rate_arg,
         lidar_fov_min_arg, lidar_fov_max_arg, lidar_bin_arg,
         lidar_mask_min_arg, lidar_mask_max_arg, enable_lidar_arg,
-        uart_node, ws_node, panel_node, lidar_node,
+        song_path_arg,
+        uart_node, ws_node, panel_node, lidar_node, jukebox_node,
     ])

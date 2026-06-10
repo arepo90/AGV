@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 MAGIC0 = 0xAA
 MAGIC1 = 0x56
-VERSION = 0x03   # v3: +led_indicator_cfg in CORE, lidar tail in SENSORS, PKT_LIDAR_SEGMENTS
+VERSION = 0x04   # v4: TOF + 6S battery removed (SENSORS = 18B fixed + lidar tail)
 MAX_PAYLOAD = 255
 FRAME_OVERHEAD = 8
 MAX_FRAME = MAX_PAYLOAD + FRAME_OVERHEAD
@@ -114,7 +114,12 @@ class StreamingParser:
                 self._buf.append(b)
                 self._state = 2
             else:
+                # Mirror the C parsers: a failed MAGIC1 byte may itself be a
+                # new MAGIC0 — re-test it so resync doesn't drop a frame.
                 self._reset()
+                if b == MAGIC0:
+                    self._buf = bytearray([b])
+                    self._state = 1
         elif s == 2:
             if b != VERSION:
                 if self._on_error:

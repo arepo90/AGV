@@ -5,11 +5,17 @@
 #include <stdbool.h>
 
 /* =============================================================================
- *  LINE_FOLLOW navigator (QTR-8A) + sweep calibration persisted to flash.
+ *  LINE_FOLLOW navigator (QTR-8A).
  *
- *  Per-sensor white/black baselines normalise each reading; a weighted centroid
- *  gives line position in [-1, +1]; a PID maps position error → ω. Cruise speed
- *  drops on sharp corrections. This PID is the only one left in the firmware.
+ *  Per-frame min/max auto-ranging normalises each reading (no calibration); a
+ *  weighted centroid gives line position in [-1, +1]; a PID maps position error
+ *  → ω. Cruise speed drops on sharp corrections. This PID is the only one left
+ *  in the firmware.
+ *
+ *  A wide perpendicular bar ("T", ≥ LINE_T_MIN_SENSORS black) at the end of the
+ *  line triggers a 180° on-axis turn: rotate blind for LINE_TURN_BLIND_RAD of
+ *  encoder-odometry heading, then keep rotating until the line is back in view,
+ *  then resume following. Watchdogs (max sweep / timeout) fall back to lost.
  * =============================================================================
  */
 
@@ -17,18 +23,10 @@ void  nav_line_init(void);
 void  nav_line_reset(void);
 void  nav_line_get(float dt_s, float *v_target, float *omega_target);
 
-/* Sweep calibration state machine (CMD_QTR_CALIBRATE). */
-void  nav_line_cal_begin(void);
-void  nav_line_cal_track(void);     /* sample min/max while a sweep is active */
-void  nav_line_cal_cancel(void);
-bool  nav_line_cal_active(void);
-bool  nav_line_cal_save(void);              /* persist baselines to flash */
-bool  nav_line_cal_reset_defaults(void);    /* revert + erase flash */
-bool  nav_line_load_calibration_from_flash(void);
-
 /* Live tunables (PARAM_UPDATE). */
 void  nav_line_set_cruise_mps(float v);
 void  nav_line_set_lost_threshold(float t);
+void  nav_line_set_t_black_counts(float counts);
 void  nav_line_set_gains(float kp, float ki, float kd);
 
 /* Telemetry. */

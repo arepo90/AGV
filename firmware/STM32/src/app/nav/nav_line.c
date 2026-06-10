@@ -1,140 +1,57 @@
 #include "nav_line.h"
 #include "analog.h"
 #include "config.h"
-#include "crc.h"
-#include "flash.h"
 #include "log.h"
+#include "odometry.h"
 #include "pid.h"
 #include "types.h"
-#include <stddef.h>
-#include <string.h>
+#include <math.h>
 
-static uint16_t s_white[ANALOG_QTR_COUNT];
-static uint16_t s_black[ANALOG_QTR_COUNT];
+#ifndef M_PI
+#define M_PI 3.14159265358979323846f
+#endif
+
+/* T-turn phases. FOLLOW is the normal centroid/PID law; the turn rotates on
+ * the spot — blind until the array is guaranteed clear of the T bar, then
+ * searching until the line is back in view. */
+typedef enum { LF_FOLLOW, LF_TURN_BLIND, LF_TURN_SEARCH } lf_state_t;
+
 static pid_t    s_pid;
 static bool     s_lost = false;
 static float    s_position = 0.0f;
 
-static float    s_cruise_mps     = LINE_FOLLOW_CRUISE_MPS;
-static float    s_lost_threshold = QTR_LINE_LOST_THRESHOLD;
+static float    s_cruise_mps      = LINE_FOLLOW_CRUISE_MPS;
+static float    s_min_contrast    = QTR_MIN_CONTRAST_COUNTS;   /* ADC counts (max-min) */
+static float    s_t_black         = LINE_T_BLACK_COUNTS;       /* ADC counts, absolute */
 
-/* ---- Sweep-calibration state -------------------------------------------- */
-static bool     s_cal_active = false;
-static uint16_t s_cal_min[ANALOG_QTR_COUNT];
-static uint16_t s_cal_max[ANALOG_QTR_COUNT];
+static lf_state_t s_state = LF_FOLLOW;
+static uint32_t s_t_streak = 0;        /* consecutive frames matching the T bar */
+static float    s_turn_swept = 0.0f;   /* |Δθ| integrated over the turn (rad) */
+static float    s_turn_elapsed_s = 0.0f;
+static float    s_theta_prev = 0.0f;
 
-/* ---- Flash schema ------------------------------------------------------- */
-#define QTR_FLASH_MAGIC    0xC4118A33u
-#define QTR_FLASH_VERSION  0x00000001u
+#define LINE_TURN_OMEGA  (LINE_TURN_CCW ? LINE_TURN_OMEGA_RADPS : -LINE_TURN_OMEGA_RADPS)
 
-typedef struct __attribute__((packed)) {
-    uint32_t magic;
-    uint32_t version;
-    uint16_t white[ANALOG_QTR_COUNT];
-    uint16_t black[ANALOG_QTR_COUNT];
-    uint16_t crc16;
-} qtr_record_t;
-
-static uint16_t record_crc(const qtr_record_t *r) {
-    return crc16_ccitt((const uint8_t *)r, offsetof(qtr_record_t, crc16));
+static float wrap_pi(float a) {
+    while (a >  (float)M_PI) a -= 2.0f * (float)M_PI;
+    while (a < -(float)M_PI) a += 2.0f * (float)M_PI;
+    return a;
 }
 
 void nav_line_init(void) {
-    for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
-        s_white[i] = QTR_DEFAULT_WHITE;
-        s_black[i] = QTR_DEFAULT_BLACK;
-    }
     pid_init(&s_pid, LINE_FOLLOW_KP, LINE_FOLLOW_KI, LINE_FOLLOW_KD,
              -MAX_ANGULAR_SPEED_RADPS, MAX_ANGULAR_SPEED_RADPS, MAX_ANGULAR_SPEED_RADPS);
     s_lost = false;
     s_position = 0.0f;
+    s_state = LF_FOLLOW;
+    s_t_streak = 0;
 }
 
 void nav_line_reset(void) {
     pid_reset(&s_pid);
     s_lost = false;
-}
-
-/* ---- Sweep calibration --------------------------------------------------- */
-
-void nav_line_cal_begin(void) {
-    s_cal_active = true;
-    for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
-        s_cal_min[i] = 0xFFFFu;
-        s_cal_max[i] = 0;
-    }
-    log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_QTR_CAL_BEGIN, 0);
-}
-
-void nav_line_cal_track(void) {
-    if (!s_cal_active || !analog_has_data()) return;
-    for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
-        uint16_t raw = analog_qtr(i);
-        if (raw < s_cal_min[i]) s_cal_min[i] = raw;
-        if (raw > s_cal_max[i]) s_cal_max[i] = raw;
-    }
-}
-
-void nav_line_cal_cancel(void) {
-    if (!s_cal_active) return;
-    s_cal_active = false;
-    log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_QTR_CAL_CANCELED, 0);
-}
-
-bool nav_line_cal_active(void) { return s_cal_active; }
-
-bool nav_line_cal_save(void) {
-    if (!s_cal_active) return false;
-    s_cal_active = false;
-
-    uint8_t insufficient = 0;
-    for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
-        uint16_t mn = s_cal_min[i], mx = s_cal_max[i];
-        if ((uint32_t)mx - (uint32_t)mn < 200u) insufficient |= (uint8_t)(1u << i);
-        else { s_white[i] = mn; s_black[i] = mx; }
-    }
-    if (insufficient)
-        log_record(LOG_MOD_NAV, LOG_SEV_WARN, LOG_CODE_QTR_CAL_INSUFFICIENT_RANGE, insufficient);
-
-    qtr_record_t rec;
-    rec.magic   = QTR_FLASH_MAGIC;
-    rec.version = QTR_FLASH_VERSION;
-    memcpy(rec.white, s_white, sizeof rec.white);
-    memcpy(rec.black, s_black, sizeof rec.black);
-    rec.crc16 = record_crc(&rec);
-
-    bool ok = flash_write_page(&rec, sizeof rec);
-    log_record(LOG_MOD_NAV, ok ? LOG_SEV_INFO : LOG_SEV_ERROR,
-               ok ? LOG_CODE_QTR_CAL_END : LOG_CODE_FLASH_WRITE_FAIL, ok ? 1u : 0u);
-    return ok;
-}
-
-bool nav_line_cal_reset_defaults(void) {
-    for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
-        s_white[i] = QTR_DEFAULT_WHITE;
-        s_black[i] = QTR_DEFAULT_BLACK;
-    }
-    s_cal_active = false;
-    return flash_erase_page();
-}
-
-bool nav_line_load_calibration_from_flash(void) {
-    qtr_record_t rec;
-    flash_read_page(&rec, sizeof rec);
-
-    if (rec.magic != QTR_FLASH_MAGIC) return false;   /* none yet / erased — not an error */
-    if (rec.version != QTR_FLASH_VERSION) {
-        log_record(LOG_MOD_NAV, LOG_SEV_WARN, LOG_CODE_FLASH_LOAD_FAIL, rec.version);
-        return false;
-    }
-    if (rec.crc16 != record_crc(&rec)) {
-        log_record(LOG_MOD_NAV, LOG_SEV_ERROR, LOG_CODE_FLASH_LOAD_FAIL, rec.crc16);
-        return false;
-    }
-    memcpy(s_white, rec.white, sizeof s_white);
-    memcpy(s_black, rec.black, sizeof s_black);
-    log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_FLASH_LOAD_OK, 0);
-    return true;
+    s_state = LF_FOLLOW;
+    s_t_streak = 0;
 }
 
 /* ---- Control law --------------------------------------------------------- */
@@ -145,23 +62,76 @@ float nav_line_position(void) { return s_position; }
 void nav_line_get(float dt_s, float *v_target, float *omega_target) {
     if (!analog_has_data()) { *v_target = 0.0f; *omega_target = 0.0f; return; }
 
-    float weighted = 0.0f, total = 0.0f;
+    /* One raw scan feeds everything: min/max for the auto-ranged centroid and
+     * an absolute black count for the T bar (auto-ranging alone cannot tell
+     * all-black from all-white — both are just low contrast). */
+    uint16_t raw[ANALOG_QTR_COUNT];
+    uint16_t mn = 0xFFFFu, mx = 0u;
+    uint32_t nblack = 0;
     for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
-        int32_t range = (int32_t)s_black[i] - (int32_t)s_white[i];
-        if (range <= 0) continue;   /* misconfigured sensor — skip */
-        float n = (float)((int32_t)analog_qtr(i) - (int32_t)s_white[i]) / (float)range;
-        if (n < 0.0f) n = 0.0f;
-        if (n > 1.0f) n = 1.0f;
-#if QTR_INVERT_ARRAY
-        float idx = (float)((ANALOG_QTR_COUNT - 1u) - i);
-#else
-        float idx = (float)i;
-#endif
-        weighted += n * idx;
-        total    += n;
+        raw[i] = analog_qtr(i);
+        if (raw[i] < mn) mn = raw[i];
+        if (raw[i] > mx) mx = raw[i];
+        if ((float)raw[i] >= s_t_black) nblack++;   /* darker reads higher */
     }
 
-    if (total < s_lost_threshold) {
+    /* ---- 180° turn at the T (odometry-gated, on-axis) -------------------- */
+    if (s_state != LF_FOLLOW) {
+        s_turn_elapsed_s += dt_s;
+        float th = odometry_theta();
+        s_turn_swept += fabsf(wrap_pi(th - s_theta_prev));   /* θ is wrapped ±π */
+        s_theta_prev = th;
+
+        if (s_state == LF_TURN_BLIND && s_turn_swept >= LINE_TURN_BLIND_RAD)
+            s_state = LF_TURN_SEARCH;
+
+        bool line_visible = (float)(mx - mn) >= s_min_contrast &&
+                            nblack < LINE_T_MIN_SENSORS;
+        if (s_state == LF_TURN_SEARCH && line_visible) {
+            log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_LINE_REACQUIRED,
+                       (uint32_t)(s_turn_swept * 1000.0f));
+            s_state = LF_FOLLOW;
+            s_t_streak = 0;
+            /* fall through — resume following on this same frame */
+        } else if (s_turn_swept >= LINE_TURN_MAX_RAD ||
+                   s_turn_elapsed_s * 1000.0f >= (float)LINE_TURN_TIMEOUT_MS) {
+            log_record(LOG_MOD_NAV, LOG_SEV_WARN, LOG_CODE_LINE_TURN_FAILED,
+                       (uint32_t)(s_turn_swept * 1000.0f));
+            s_state = LF_FOLLOW;
+            s_lost = true;
+            *v_target = 0.0f; *omega_target = 0.0f;
+            return;
+        } else {
+            *v_target = 0.0f;
+            *omega_target = LINE_TURN_OMEGA;
+            return;
+        }
+    } else if (nblack >= LINE_T_MIN_SENSORS) {
+        if (++s_t_streak >= LINE_T_DEBOUNCE_TICKS) {
+            log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_LINE_T_DETECTED, nblack);
+            s_state = LF_TURN_BLIND;
+            s_turn_swept = 0.0f;
+            s_turn_elapsed_s = 0.0f;
+            s_theta_prev = odometry_theta();
+            s_position = 0.0f;
+            s_lost = false;
+            pid_reset(&s_pid);
+            *v_target = 0.0f;
+            *omega_target = LINE_TURN_OMEGA;
+            return;
+        }
+        /* Debouncing: hold course over the bar (it reads near-centre anyway)
+         * rather than letting the low-contrast guard call it lost. */
+        *v_target = s_cruise_mps; *omega_target = 0.0f;
+        return;
+    } else {
+        s_t_streak = 0;
+    }
+
+    /* Lost is decided on ABSOLUTE contrast, not the normalised sum: auto-ranging
+     * always stretches the frame to full scale, so without this guard a uniform
+     * surface's sensor noise would masquerade as a line. */
+    if ((float)((int32_t)mx - (int32_t)mn) < s_min_contrast) {
         if (!s_lost) {
             log_record(LOG_MOD_NAV, LOG_SEV_WARN, LOG_CODE_LINE_LOST, 0);
             s_lost = true;
@@ -172,8 +142,21 @@ void nav_line_get(float dt_s, float *v_target, float *omega_target) {
     }
     s_lost = false;
 
+    float span = (float)((int32_t)mx - (int32_t)mn);   /* > 0: guarded above */
+    float weighted = 0.0f, total = 0.0f;
+    for (uint32_t i = 0; i < ANALOG_QTR_COUNT; i++) {
+        float n = (float)((int32_t)raw[i] - (int32_t)mn) / span;   /* line→1, floor→0 */
+#if QTR_INVERT_ARRAY
+        float idx = (float)((ANALOG_QTR_COUNT - 1u) - i);
+#else
+        float idx = (float)i;
+#endif
+        weighted += n * idx;
+        total    += n;
+    }
+
     float centre   = ((float)ANALOG_QTR_COUNT - 1.0f) * 0.5f;
-    float centroid = weighted / total;
+    float centroid = weighted / total;             /* total >= 1 (max sensor → 1) */
     s_position = (centroid - centre) / centre;     /* [-1, +1] */
 
     /* Setpoint 0 (line centred). error = 0 - position; Kp>0 turns toward it. */
@@ -187,5 +170,6 @@ void nav_line_get(float dt_s, float *v_target, float *omega_target) {
 }
 
 void nav_line_set_cruise_mps(float v)    { if (v >= 0.0f && v <= 5.0f) s_cruise_mps = v; }
-void nav_line_set_lost_threshold(float t){ if (t > 0.0f && t < 8.0f) s_lost_threshold = t; }
+void nav_line_set_lost_threshold(float t){ if (t >= 0.0f && t <= 4095.0f) s_min_contrast = t; }
+void nav_line_set_t_black_counts(float c){ if (c >= 0.0f && c <= 4095.0f) s_t_black = c; }
 void nav_line_set_gains(float kp, float ki, float kd) { pid_set_gains(&s_pid, kp, ki, kd); }

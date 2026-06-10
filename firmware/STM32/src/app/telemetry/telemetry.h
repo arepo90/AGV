@@ -12,7 +12,7 @@
  *    PKT_TLM_CORE     operational state + pose + chassis v/ω + currents + prox
  *                     (fast: TLM_CORE_HZ_MOVING navigating, TLM_CORE_HZ_IDLE idle)
  *    PKT_TLM_DRIVE    per-wheel targets/meas/duty/counts (TLM_DRIVE_HZ; PI tuning)
- *    PKT_TLM_SENSORS  load cells + IMU orientation + calib (TLM_SENSORS_HZ)
+ *    PKT_TLM_SENSORS  load cells + battery + LiDAR tail (TLM_SENSORS_HZ)
  *    PKT_TLM_QTR      QTR raw + line position (control rate, LINE_FOLLOW/cal only)
  *
  *  telemetry_tick() sends whichever streams are due. Rates live in config.h.

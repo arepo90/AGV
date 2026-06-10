@@ -10,7 +10,7 @@ Guided Vehicle): a differential-drive robot with two 12 V DC motors.
 | Unit | Role |
 |---|---|
 | STM32F051 (F0-Discovery class) | Main MCU — real-time control, sensor I/O, motor driving. Bare-metal C at 48 MHz. |
-| ESP32-C3 SuperMini | Transparent USB-CDC ↔ UART byte pump to the Jetson; drives the WS2812B indicator rings + onboard LED from a telemetry tap. |
+| ESP32-C3 SuperMini | USB-CDC ↔ UART byte pump to the Jetson; drives the WS2812B indicator rings + onboard LED from a telemetry tap; reads the INA219 battery sensor and pushes it to the STM32. |
 | NVIDIA Jetson Orin Nano | High-level compute — ROS 2 bridge (UART ↔ topics) + Wi-Fi bridge to the workstation; LiDAR segmentation (`lidar_node`). |
 
 The workstation laptop connects to a Wi-Fi AP hosted by the Jetson (or a shared
@@ -56,11 +56,13 @@ Two separate LiPo batteries power the system; all grounds are shared.
 | 3.3V | 5V → step-down | Some sensors |
 | 19V | 6S LiPo → step-down | Jetson Orin Nano |
 
-Pack voltages are monitored by two INA219 (bus-voltage sense only; the shunt is
-unused): 0x40 on the 3S rail, 0x41 on the 6S rail. The 3S reading feeds the
-battery low-voltage monitor; the 6S is display-only (the STM32 cannot protect the
-Jetson rail). Battery percentage is derived downstream (GUI + Jetson panel node)
-from the raw millivolts via a per-cell LiPo curve.
+The 3S pack voltage is monitored by one INA219 (bus-voltage sense only; the
+shunt is unused) at 0x40 on the **ESP32's** I2C bus (GPIO 6 SDA / 7 SCL); the
+ESP32 polls it at 2 Hz and pushes each reading to the STM32 as `PKT_BATTERY`,
+which feeds the battery low-voltage monitor. The 6S Jetson rail is not
+monitored (the STM32 could not protect it anyway). Battery percentage is
+derived downstream (GUI + Jetson panel node) from the raw millivolts via a
+per-cell LiPo curve.
 
 ---
 
@@ -83,7 +85,9 @@ from the workstation is expected.
    requires reconnection **and** an explicit workstation clear.
 
 Any inbound packet — not just `HEARTBEAT` — counts as proof of life and refreshes
-the watchdog.
+the watchdog, **except** `LIDAR_SEGMENTS` and `BATTERY`: the Jetson and the ESP32
+push those autonomously, so they must not mask a dead workstation (the heartbeat
+is end-to-end, GUI → firmware).
 
 ---
 
@@ -98,20 +102,18 @@ exclusive; background monitors always run.
 |---|---|---|---|
 | `STANDBY` | Yes | Yes | Motors idle (SLEEP asserted), system active. Default. |
 | `REMOTE_CONTROL` | Yes | No | Workstation sends `(v, ω)` velocity commands directly. |
-| `LINE_FOLLOW` | Yes | Yes | Follows a floor line via the QTR-8A array. |
-| `TRAJECTORY_FOLLOW` | Yes | Yes | Pure-pursuit over a pre-loaded waypoint polyline using odometry. |
+| `LINE_FOLLOW` | Yes | Yes | Follows a floor line via the QTR-8A array. A wide perpendicular bar ("T") at the end of the line triggers an on-axis 180° turnaround; the AGV then follows the line back. |
 
 ### Background monitors (always active)
 
 | Monitor | Description |
 |---|---|
 | `OBSTACLE_DETECTION` | IR proximity sensors via EXTI. Triggers E-STOP on detection; auto-clears when clear. |
-| `TOF_RANGING` | 4 VL53L0X distance sensors via I2C mux. Distance bands → caution level, then auto-clearing E-STOP. |
-| `LIDAR_RANGING` | Jetson segments a 2D LaserScan and pushes per-interval distances (`PKT_LIDAR_SEGMENTS`). The firmware applies the same distance-band policy as TOF (caution → auto-clearing E-STOP) over the minimum fresh segment. Stale (Jetson silent > `LIDAR_STALE_MS`) → treated as clear (fail-safe). |
-| `CARGO_MONITORING` | Load-cell reads → caution or E-STOP on overload / imbalance. |
-| `ODOMETRY` | Encoder + IMU fusion for pose/velocity (see below). |
+| `LIDAR_RANGING` | Jetson segments a 2D LaserScan and pushes per-interval distances (`PKT_LIDAR_SEGMENTS`). Distance bands over the minimum fresh segment → caution level, then auto-clearing E-STOP. Stale (Jetson silent > `LIDAR_STALE_MS`) → treated as clear (fail-safe). |
+| `CARGO_MONITORING` | Load-cell reads → caution or E-STOP on overload / imbalance. Imbalance is ignored below `IMBALANCE_FLOOR_KG` (5 kg) total — the deviation fraction is noise-dominated on a light platform. |
+| `ODOMETRY` | Encoder dead-reckoning for pose/velocity (see below). |
 | `CURRENT_MONITORING` | Motor current-sense ADC → overcurrent E-STOP. |
-| `BATTERY_MONITORING` | 2 INA219 read 3S/6S bus voltage. 3S undervoltage → caution → auto-clearing E-STOP (hysteresis); 6S display-only. |
+| `BATTERY_MONITORING` | The ESP32 reads the 3S INA219 and pushes the voltage (`PKT_BATTERY`). Undervoltage → caution → auto-clearing E-STOP (hysteresis). Stale (> `BATTERY_PUSH_STALE_MS`) → treated as absent, releasing any battery caution/E-STOP (fail-safe). |
 | `HEARTBEAT_WATCH` | In `SUPERVISED` mode: monitors for heartbeat timeout. |
 
 ---
@@ -127,18 +129,18 @@ is handled by PWM.
 | Source | Auto-clears? | Workstation override? |
 |---|---|---|
 | Proximity (IR obstacle) | Yes — when all sensors deassert | Yes — can force-clear early |
-| TOF (close range) | Yes — when nearest distance leaves the E-STOP band | Yes |
 | LiDAR (close range) | Yes — when nearest segment leaves the E-STOP band (or data goes stale) | Yes |
 | Cargo overload / imbalance | Yes — when within limits | Yes |
-| Battery low (3S) | Yes — when voltage recovers above trip + hysteresis | Yes |
+| Battery low (3S) | Yes — when voltage recovers above trip + hysteresis (or data goes absent) | Yes |
 | Heartbeat grace expired | No — needs reconnect + explicit clear | Yes |
 | Workstation command | No — needs explicit clear | Yes |
 | Motor overcurrent | No — needs explicit clear | Yes |
 | Firmware fault | No — needs explicit clear | Yes |
 
-The source bitmask is 10 bits wide (E-STOP bit 9 = LiDAR; was 7); `estop_sources`/
-`caution_sources` are carried as 16-bit fields in `TLM_CORE`. E-STOP source
-assert/clear is interrupt-safe (the proximity ISR calls into it).
+The source bitmask is 10 bits wide (bit 9 = LiDAR, bit 8 = battery; bits 5 and 7
+are retired — they were TOF); `estop_sources`/`caution_sources` are carried as
+16-bit fields in `TLM_CORE`. E-STOP source assert/clear is interrupt-safe (the
+proximity ISR calls into it).
 
 ---
 
@@ -155,14 +157,16 @@ effective_max_accel = configured_max_accel × caution_modifier   (inside the ram
 | Level | Modifier | Example trigger |
 |---|---|---|
 | `NORMAL` | 1.0 | All clear |
-| `CAUTION` | 0.5 | Mild imbalance; TOF/LiDAR mid-range; 3S low; UNSUPERVISED navigation baseline |
-| `CRITICAL` | 0.2 | Severe imbalance / overload; TOF/LiDAR close range |
+| `CAUTION` | 0.5 | Mild imbalance; LiDAR mid-range; 3S low; UNSUPERVISED navigation baseline |
+| `CRITICAL` | 0.2 | Severe imbalance / overload; LiDAR close range |
 | `ESTOP` | 0.0 | E-STOP active (modifier is informational here) |
 
 Multiple sources can each set a level; the firmware uses the **minimum** (most
 conservative). When the workstation sends an explicit override (`PKT_CMD 0x06`),
 that value is used directly with full authority — it can be more permissive or
-more restrictive than the firmware minimum.
+more restrictive than the firmware minimum. The override holds for
+`CAUTION_WS_OVERRIDE_TIMEOUT_MS` (default 10 s) after the last command, then
+releases back to the firmware minimum; the workstation re-sends to extend it.
 
 ---
 
@@ -201,19 +205,19 @@ navigator → ramp (slew/shape) → caution clamp → kinematic split → per-wh
 |---|---|
 | `STANDBY` | `(0, 0)` |
 | `REMOTE_CONTROL` | latest workstation `(v, ω)` (passthrough) |
-| `LINE_FOLLOW` | `v` = cruise (halved on sharp corrections); `ω` = `PID(line_error)` from the QTR weighted centroid. This is the only PID in the firmware. |
-| `TRAJECTORY_FOLLOW` | pure pursuit over the waypoint polyline (below) |
+| `LINE_FOLLOW` | `v` = cruise (halved on sharp corrections); `ω` = `PID(line_error)` from the QTR weighted centroid (per-frame min/max auto-ranging — no calibration). This is the only PID in the firmware. |
 
-#### Pure-pursuit navigator (`TRAJECTORY_FOLLOW`)
-
-Path = straight segments between waypoints, plus an implicit "waypoint 0" captured
-from the pose at start so cross-track error is defined from tick 0. Per tick:
-project the pose onto the active segment, walk `PURE_PURSUIT_LOOKAHEAD_M` forward
-along the path to a lookahead point `L`, then
-`α = wrap_pi(atan2(L−pose) − θ)`, `κ = 2·sin(α)/‖pose−L‖`,
-`v = cruise / (1 + TRAJECTORY_CURV_SLOWDOWN·|κ|)`, `ω = clamp(v·κ, ±ω_max)`.
-If `L` is behind the robot (`|α| > π/2`) it rotates toward `L` at half ω_max rather
-than reversing. Completes within `WAYPOINT_REACH_RADIUS_M` of the final waypoint.
+**T-junction turnaround (LINE_FOLLOW):** a wide perpendicular bar at the end of
+the line blacks out the array. Detection is absolute — ≥ `LINE_T_MIN_SENSORS`
+sensors above `LINE_T_BLACK_COUNTS` (runtime-tunable, `PARAM 0x27`), debounced a
+few frames — because the auto-ranging centroid cannot tell all-black from
+all-white. The AGV then rotates on its own axis (direction `LINE_TURN_CCW`):
+blind for `LINE_TURN_BLIND_RAD` (~150°) of encoder-odometry heading so it clears
+the bar, then keeps rotating until the line is back in view, then resumes
+following. The odometry gating self-adjusts to the caution modifier (no timing
+tune), so the turn requires `ODOMETRY`; watchdogs (`LINE_TURN_MAX_RAD`,
+`LINE_TURN_TIMEOUT_MS`) fall back to a logged `LINE_TURN_FAILED` + line-lost
+stop.
 
 ### Motion profile (ramp)
 
@@ -232,49 +236,21 @@ caution modifier scales `max_accel`/`max_jerk` at step time. Reset on E-STOP.
 
 ---
 
-## Odometry — heading fusion (2-state Kalman filter)
+## Odometry — encoder dead-reckoning
 
-`app/odometry` owns pose. The MPU6050 is a 6-DOF IMU with **no magnetometer**, so
-there is **no absolute heading reference** — fine, since the IMU lives inside a
-closed metal enclosure beside two brushed DC motors where a magnetometer would be
-useless anyway. Heading θ is therefore integrated from the gyro and would drift
-unbounded; a 2-state **linear Kalman filter** `[θ, gyro_bias]` keeps it honest by
-estimating and cancelling the gyro's slowly-drifting bias from two yaw-rate
-sources. (Position carries no trig in the filter state, so this is a plain KF, not
-an EKF — cheap on the FPU-less M0.)
+`app/odometry` owns pose. Heading θ and position (x, y) are pure dead-reckoning
+from the wheel encoders — no IMU.
 
 ```
-state x = [θ, b]                                   b = gyro-Z bias
-predict (input = gyro_z):
-    θ ← θ + (gyro_z − b)·dt                         debiased integration (slip-immune)
-    F = [[1,−dt],[0,1]] ;  P ← F·P·Fᵀ + diag(Q_θ, Q_b)·dt
-correct (measure true rate, H = [0,−1], S = P₁₁+R):
-    z = (v_r − v_l)/WHEEL_BASE   with R_ENC         encoder rate, skipped on wheel slip
-    z = 0                        with R_ZUPT        ZUPT: when verified at rest
-θ nudged via cross-covariance; v = ½(v_l+v_r); x += v·cos θ·dt; y += v·sin θ·dt
+ω_enc = (v_r − v_l) / WHEEL_BASE
+v     = ½(v_l + v_r)
+θ    += ω_enc · dt
+x    += v · cos θ · dt
+y    += v · sin θ · dt
 ```
 
-- **Encoder update** corrects the bias whenever the gyro and encoder yaw rates
-  agree; it is **rejected on slip** (`|gyro−enc_ω| > HEADING_SLIP_REJECT_RADPS`)
-  so slip never poisons the estimate.
-- **ZUPT (zero-velocity update)** is the practical drift bound with no compass:
-  when both wheels read ≈0 **and** `app/imu` reports the chassis still
-  (accel ≈ 1 g, gyro small), the true yaw rate is 0, so the gyro reading is pure
-  bias — fed as `z = 0` with a tight `R_ZUPT`, pinning the bias each time the AGV
-  pauses (STANDBY, between waypoints, every E-STOP).
-- With **no IMU** it degrades to pure encoder-differential heading.
-- **Position is dead-reckoned** (no sensor observes x,y or absolute θ yet). When
-  LiDAR/SLAM supplies an absolute fix, promote θ,x,y into a full EKF — the heading
-  filter is structured for that.
-
-`app/imu` reads raw gyro + accel only: gyro Z (the filter input), plus an
-accel+gyro complementary **pitch/roll** tilt estimate (gravity-referenced,
-diagnostic on a flat floor) and an `is_still` flag for ZUPT gating. The MPU6050
-DMP is unused — it offers no absolute yaw and can't fuse the encoders.
-`IMU_HEADING_SIGN` reconciles the gyro-Z sign with the encoder math convention
-(CCW-positive), applied inside `app/imu`. The DLPF (`MPU6050_DLPF_CFG`) is the key
-knob for rejecting motor/enclosure vibration. Consumed by telemetry and the
-pure-pursuit navigator.
+Position and heading accumulate drift over time with no external correction.
+`RESET_ODOMETRY` (`CMD 0x0D`, STANDBY only) zeroes the pose.
 
 ---
 
@@ -308,7 +284,7 @@ them; the Jetson's `uart_bridge_node` is the framing authority on the host side.
   8-byte overhead. CRC-16/CCITT over [VER, SEQ, TYPE, LEN, PAYLOAD...].
 ```
 
-- **VER** is `0x03`. Receivers reject mismatched versions and re-sync on `MAGIC`.
+- **VER** is `0x04`. Receivers reject mismatched versions and re-sync on `MAGIC`.
 - **SEQ** wraps 0–255 for gap detection.
 - Frames with a CRC mismatch are discarded (and NACKed by the firmware).
 
@@ -325,8 +301,9 @@ them; the Jetson's `uart_bridge_node` is the framing authority on the host side.
 | `0x06` | `NACK` | both | `[echoed_seq, error_code]` |
 | `0x08` | `LOG` | STM32→WS | One fault-log entry |
 | `0x09` | `TLM_DRIVE` | STM32→WS | Per-wheel control internals |
-| `0x0A` | `TLM_SENSORS` | STM32→WS | Load cells + IMU orientation |
+| `0x0A` | `TLM_SENSORS` | STM32→WS | Load cells + battery + LiDAR echo |
 | `0x0B` | `TLM_QTR` | STM32→WS | QTR raw + line position |
+| `0x0C` | `BATTERY` | ESP32→STM32 | Pushed INA219 3S bus voltage (`u16 mV` LE); fire-and-forget |
 | `0xFF` | `RESET` | WS→STM32 | `[]`/`0x00` = clear E-STOP, `0x01` = soft reset |
 
 ### Reliability
@@ -347,10 +324,10 @@ fields little-endian; layouts are fixed by `app/telemetry`.
 | 0 | `timestamp_ms` | u32 |
 | 4 | `mode` | u8 |
 | 5 | `function` | u8 |
-| 6 | `estop_sources` | u16 (bitmask; bit7 TOF, bit8 battery, bit9 LiDAR) |
-| 8 | `caution_sources` | u16 (bitmask; bit5 TOF, bit6 battery, bit7 LiDAR) |
+| 6 | `estop_sources` | u16 (bitmask; bit8 battery, bit9 LiDAR; bit7 retired) |
+| 8 | `caution_sources` | u16 (bitmask; bit6 battery, bit7 LiDAR; bit5 retired) |
 | 10 | `caution_modifier` | f32 |
-| 14 | `flags` | u8 (bit0 adc, bit1 hx711, bit2 imu, bit3 tare) |
+| 14 | `flags` | u8 (bit0 adc, bit1 hx711, bit3 tare) |
 | 15 | `velocity_linear` | f32 |
 | 19 | `velocity_angular` | f32 |
 | 23–34 | `odom_x`, `odom_y`, `odom_theta` | 3×f32 |
@@ -358,25 +335,20 @@ fields little-endian; layouts are fixed by `app/telemetry`.
 | 37 | `current_right_ma` | u16 |
 | 39 | `proximity_obstructed` | u16 (bits 6–9 = PC6–PC9) |
 | 41 | `led_mode` | u8 (state-ring animation: 0 pulse, 1 snake) |
-| 42 | `led_indicator_cfg` | u8 (obstacle ring: bit0 base 0 off/1 white, bit1 spread 0 fixed/1 responsive) |
+| 42 | `led_indicator_cfg` | u8 (obstacle ring: bit0 base 0 off/1 white; bit1 unused — was TOF spread) |
 
 **`TLM_DRIVE`** — 32 bytes: `v_left_target`, `v_right_target`, `velocity_left`,
 `velocity_right`, `duty_left`, `duty_right` (6×f32), then `encoder_left_counts`,
 `encoder_right_counts` (2×u32).
 
-**`TLM_SENSORS`** — 41 fixed bytes + a variable LiDAR tail: `load_cells[4]` (FL, FR,
-RL, RR kg, 4×f32), `imu_gyro_bias_dps`, `imu_pitch_deg`, `imu_roll_deg` (3×f32),
-`imu_status` (u8: bit0 present, bit1 has_data, bit2 bias_converged, bit3
-zupt_active), then `tof_mm[4]` (Front, Rear, Left, Right; 4×u16) and `batt_3s_mv`,
-`batt_6s_mv` (2×u16, 0 if absent), finally the echoed LiDAR segments (`u16 mm` per
-angular interval; empty when no fresh LiDAR data, ≤ `LIDAR_MAX_SEGMENTS`). Consumers
-read the segment count from the frame LEN. The MPU6050 has no absolute yaw, so the
-fused heading is carried in `TLM_CORE` (`odom_theta`); the former yaw slot now
-reports the heading-KF gyro-bias estimate for tuning. Lets the ESP32 obstacle ring
-+ GUI see the LiDAR the firmware acts on.
+**`TLM_SENSORS`** — 18 fixed bytes + a variable LiDAR tail: `load_cells[4]` (FL, FR,
+RL, RR kg, 4×f32), then `batt_3s_mv` (u16, 0 if absent), finally the echoed LiDAR
+segments (`u16 mm` per angular interval; empty when no fresh LiDAR data,
+≤ `LIDAR_MAX_SEGMENTS`). Consumers read the segment count from the frame LEN. Lets
+the ESP32 obstacle ring + GUI see the LiDAR the firmware acts on.
 
 **`TLM_QTR`** — 20 bytes: `qtr_raw[8]` (8×u16) + `line_position` (f32, [-1,+1]).
-Sent only during `LINE_FOLLOW` / QTR calibration.
+Sent only during `LINE_FOLLOW`.
 
 **`LOG`** — 12 bytes: `timestamp_ms` (u32), `code` (u16), `severity` (u8),
 `module` (u8), `data` (u32).
@@ -391,20 +363,24 @@ Sent only during `LINE_FOLLOW` / QTR calibration.
 | `TLM_QTR` | control rate (LINE_FOLLOW / cal only) | off |
 
 ### ESP32 role
-A transparent byte pump: USB-CDC `Serial` ↔ Jetson, `HardwareSerial(1)` ↔ STM32 at
-921600. No protocol interpretation either way. A side-tap parses completed `TLM_CORE`
-frames (state colour + `led_mode` animation + `led_indicator_cfg` + IR bits) and
-`TLM_SENSORS` frames (TOF + LiDAR segments) to drive the indicator LED rings and the
-onboard status LED — its only duty besides forwarding.
+A byte pump: USB-CDC `Serial` ↔ Jetson, `HardwareSerial(1)` ↔ STM32 at 921600,
+with no protocol authority (validation/NACKing live on the Jetson). A side-tap
+parses completed `TLM_CORE` frames (state colour + `led_mode` animation +
+`led_indicator_cfg` + IR bits) and `TLM_SENSORS` frames (LiDAR segments) to
+drive the indicator LED rings and the onboard status LED. Its one local sensor
+is the INA219 (3S bus voltage, I2C on GPIO 6/7): polled at 2 Hz and pushed to
+the STM32 as `PKT_BATTERY` with its own SEQ stream. A second parser tracks
+frame boundaries on the USB→UART direction so injected frames are spliced
+between host frames, never into one (if the host stalls mid-frame longer than
+`BATT_INJECT_FORCE_MS`, injection proceeds — the STM32 CRC-rejects the orphan
+and resyncs).
 
 ### Jetson role
 ROS 2 Humble workspace `software/bridge/` with four `agv_bridge` nodes:
 - **`uart_bridge_node`** owns `/dev/agv-esp32`, parses the protocol, and is the
   single ROS-side authority. Publishes the four streams as `agv_msgs/Tlm{Core,Drive,Sensors,Qtr}`
   on `/agv/{core,drive,sensors,qtr}`, plus standard `nav_msgs/Odometry` on `/agv/odom`
-  and `sensor_msgs/Imu` on `/agv/imu` for rviz/SLAM (orientation carries only the
-  gravity-referenced roll/pitch — the MPU6050 has no absolute yaw; the fused heading
-  rides on `/agv/odom`), and `/agv/log`. Inbound it accepts `/agv/cmd_vel`, `/agv/heartbeat`, `/agv/param_update`,
+  and `/agv/log`. Inbound it accepts `/agv/cmd_vel`, `/agv/heartbeat`, `/agv/param_update`,
   `/agv/lidar_segments` (→ `PKT_LIDAR_SEGMENTS`), and exposes one service per `CMD`
   subtype + `RESET` variant for ACK-confirmed commands.
 - **`ws_bridge_node`** serves `ws://<jetson>:8765/ws`, forwarding each telemetry
@@ -456,29 +432,26 @@ changes; rendering is rate-limited (the WS2812B `show()` briefly blocks).
 
 `LED_INDICATOR_RING` shows where obstacles are instead of the system state. It has a
 base layer — **off** or **white**, operator-selectable (`PARAM_LED_BASE`) — over which
-each **indicator point** maps to a distance sensor at its physical position on the
-ring (config table of `{led_id, type, sensor_index}`):
+each **indicator point** maps to a sensor at its physical position on the ring
+(config table of `{led_id, type, sensor_index}`):
 
-- **IR proximity** — red over a fixed span on detection; identical in both modes.
-- **TOF** — a yellow→red gradient by distance over `[LED_TOF_MIN_MM, LED_TOF_MAX_MM]`
-  (base beyond MAX). In **fixed** mode the lit span is constant; in **responsive**
-  mode (`PARAM_LED_INDICATOR_MODE`) the span grows as range falls (e.g. 3→15 LEDs over
-  200→20 mm).
+- **IR proximity** — red over a fixed span on detection.
 - **LiDAR** — the two endpoint LEDs (0° and MAX_FOV°) bound an arc; the echoed segments
-  map to evenly spaced gradient points along it, fixed span (responsive N/A — closer
+  map to evenly spaced yellow→red gradient points along it, fixed span (closer
   objects already subtend more of the FOV).
 
-Overlapping spans resolve to the **nearest** (lowest-distance) reading. The point/IR/
-TOF distances come from `TLM_CORE` (IR bits) + `TLM_SENSORS` (TOF + LiDAR tail) at the
-tap; the ESP32 eases colour/span toward new values each frame so the 5 Hz sensor
-stream renders smoothly. All ring geometry (which ring, LED ids, spans, gradient and
-distance ranges) lives in the ESP32 `config.h`.
+Overlapping spans resolve to the **nearest** (lowest-distance) reading. The IR bits
+come from `TLM_CORE` and the LiDAR tail from `TLM_SENSORS` at the tap; the ESP32
+eases colour toward new values each frame so the 5 Hz sensor stream renders
+smoothly. All ring geometry (which ring, LED ids, spans, gradient and distance
+ranges) lives in the ESP32 `config.h`. (`led_indicator_cfg` bit1 / `PARAM 0x52` is
+retired — it selected the spread of the removed TOF layer.)
 
 ## Status LED (onboard ESP32)
 
 Encodes mode + function (non-ESTOP): a mode flash (100 ms SUPERVISED / 400 ms
-UNSUPERVISED), pause, then N×100 ms flashes where N = function ID (STANDBY=0 …
-TRAJECTORY_FOLLOW=3), on a ~1.2 s cycle. ESTOP: continuous 100 ms on/off.
+UNSUPERVISED), pause, then N×100 ms flashes where N = function ID (STANDBY=0,
+REMOTE_CONTROL=1, LINE_FOLLOW=2), on a ~1.2 s cycle. ESTOP: continuous 100 ms on/off.
 
 ## Status Panel (Arduino UNO + 3.5" TFT)
 
@@ -490,17 +463,18 @@ compact, newline-terminated ASCII status line at ~5 Hz:
 AGV,<mode>,<func>,<estop>,<caution>,<cm>,<b3>,<p3>,<b6>,<p6>,<t0>,<t1>,<t2>,<t3>*<csum>
 ```
 
-`cm` = caution modifier ×100; `bN` = pack mV; `pN` = charge % (−1 absent); `tN` = TOF
-mm (Front, Rear, Left, Right); `csum` = 8-bit XOR of the body, two hex digits. The
-sketch (`firmware/UNO/`, MCUFRIEND_kbv + Adafruit_GFX) validates the checksum, renders
-mode / function / a NORMAL·CAUTION·E-STOP banner / 3S+6S battery bars / TOF footer, and
-shows **NO LINK** if the feed stops for >2 s. The link is one-way; the UNO never talks
-back. Battery percentage is computed on the Jetson from the raw millivolts (shared
-LiPo curve with the GUI).
+`cm` = caution modifier ×100; `bN` = pack mV; `pN` = charge % (−1 absent); `tN` =
+retired TOF fields (always 0 — kept so the field count stays stable); `csum` = 8-bit
+XOR of the body, two hex digits. The 6S fields are always absent (`b6`=0, `p6`=−1)
+since the 6S monitor was removed. The sketch (`firmware/UNO/`, MCUFRIEND_kbv +
+Adafruit_GFX) validates the checksum, renders mode / function / a
+NORMAL·CAUTION·E-STOP banner / the 3S battery bar (the 6S/TOF fields still arrive
+but are not displayed), and shows **NO LINK** if the feed stops for >2 s. The link is one-way; the UNO never talks back. Battery percentage is
+computed on the Jetson from the raw millivolts (shared LiPo curve with the GUI).
 
 Everything operationally meaningful is reachable through the binary protocol — the
 workstation is the single source of truth for everything the firmware does not own
-(controller gains, load-cell scales, runtime params, trajectory waypoints). It is a
+(controller gains, load-cell scales, runtime params). It is a
 super-user: it can override any E-STOP source, set the caution modifier in either
 direction, force any mode/function transition, update any runtime parameter, and
 trigger a soft reset.
@@ -515,11 +489,9 @@ trigger a soft reset.
 | `0x04` | `VIRTUAL_ESTOP` | — | always |
 | `0x05` | `OVERRIDE_ESTOP_SOURCE` | `[u16 mask]` (LE; high byte optional) | always |
 | `0x06` | `OVERRIDE_CAUTION` | `[f32 scalar]` | always |
-| `0x08` | `LOAD_TRAJECTORY` | `[u8 op]` (0 clear / 1 append `[f32 x][f32 y]`) | not in TRAJECTORY_FOLLOW |
 | `0x09` | `START_TARE` | — | STANDBY only |
 | `0x0A` | `LOG_DUMP_REQUEST` | — | always |
 | `0x0B` | `LOG_CLEAR` | — | always |
-| `0x0C` | `QTR_CALIBRATE` | `[u8 op]` (0 begin / 1 save+persist / 2 cancel / 3 defaults) | STANDBY only |
 | `0x0D` | `RESET_ODOMETRY` | — | STANDBY only |
 | `0x0E` | `LOAD_RAMP_CURVE` | `[u8 op]` (0 begin / 1 add `[f32 s][f32 f]` / 2 commit / 3 cancel) | always |
 
@@ -532,8 +504,8 @@ trigger a soft reset.
 | `0x13`–`0x15` | right wheel `Kp` / `Ki` / `Kff` |
 | `0x20`–`0x22` | line-follow `Kp` / `Ki` / `Kd` |
 | `0x23` | line cruise speed (m/s) |
-| `0x24` / `0x25` / `0x27` | trajectory cruise / lookahead / curvature-slowdown |
-| `0x26` | QTR line-lost threshold |
+| `0x26` | QTR line-lost min contrast (max−min ADC counts; 0 disables) |
+| `0x27` | T-bar "black" threshold (absolute ADC counts; T-turn detection) |
 | `0x30`–`0x33` | weight caution / E-STOP (kg), imbalance caution / E-STOP (fraction) |
 | `0x34`–`0x37` | HX711 per-corner offset (counts) |
 | `0x38`–`0x3B` | HX711 per-corner scale (counts→kg) |
@@ -541,9 +513,8 @@ trigger a soft reset.
 | `0x41` / `0x42` | ramp jerk linear / angular (SCURVE) |
 | `0x43` / `0x44` | ramp τ linear / angular (EXPONENTIAL) |
 | `0x50` | state-ring animation (0 pulse, 1 snake) |
-| `0x51` / `0x52` | obstacle-ring base (0 off / 1 white) / spread (0 fixed / 1 responsive) |
-| `0x60`–`0x62` | TOF caution / critical / E-STOP distance (mm) |
-| `0x63` / `0x64` | 3S battery caution / E-STOP voltage (mV) |
+| `0x51` | obstacle-ring base (0 off / 1 white) — `0x52` retired (was TOF spread) |
+| `0x63` / `0x64` | 3S battery caution / E-STOP voltage (mV) — `0x60`–`0x62` retired (were TOF bands) |
 | `0x65`–`0x67` | LiDAR caution / critical / E-STOP distance (mm) |
 
 All param updates are applied immediately and stored in RAM only — the workstation
@@ -554,15 +525,13 @@ persists values and re-sends them on connect.
 - **Tare:** STANDBY + empty platform → `START_TARE`; `flags` bit 3 clears when done.
 - **Per-corner scale:** after tare, place a known weight, read `load_cells[i]`,
   compute `new_scale = W_ref / (raw − offset)`, send via `PARAM_UPDATE 0x38+i`.
-- **QTR sweep:** STANDBY → `QTR_CALIBRATE 0`, sweep the array over the line ~3–5 s,
-  then `1` to commit (per-sensor min/max written to the last flash page with magic +
-  CRC, loaded on boot). `2` cancels, `3` reverts to defaults + erases. A sensor with
-  range < 200 counts keeps its previous baseline.
+- **QTR:** no calibration step — the line follower auto-ranges each frame against
+  the array's own min/max. Tune the line-lost min-contrast via `PARAM_UPDATE 0x26`.
 
 ### Requires a firmware rebuild
 Pin remapping, adding a function/navigator, protocol/telemetry layout changes, and
 anything in `config.h` without a `PARAM_*` ID (max speeds, telemetry rates, polarity
-flags, `DISABLE_*` toggles, heading-KF `Q`/`R`/ZUPT tunables, MPU6050 DLPF/range).
+flags, `DISABLE_*` toggles).
 
 ---
 
@@ -576,11 +545,9 @@ timer-gated flags in the main loop, never blocking delays.
 | Load cells (HX711) | 30 Hz | 2 Hz | 2 Hz |
 | QTR-8A | off | LINE_FOLLOW: control rate; else off | off |
 | Proximity (IR) | EXTI (interrupt) | EXTI | EXTI |
-| TOF (VL53L0X) | 60 Hz aggregate (round-robin, ~15 Hz/sensor) | same | same |
-| Battery (INA219) | 2 Hz | 2 Hz | 2 Hz |
+| Battery (INA219, on the ESP32) | 2 Hz pushed | 2 Hz pushed | 2 Hz pushed |
 | Encoders | hardware timer | hardware timer | hardware timer |
 | Motor current (ADC) | 100 Hz | 100 Hz | 100 Hz |
-| IMU (MPU6050) | 100 Hz | 100 Hz | 100 Hz |
 
 Control loop: **100 Hz**. Per-wheel velocity is low-pass filtered before the PI.
 
@@ -588,7 +555,8 @@ Control loop: **100 Hz**. Per-wheel velocity is low-pass filtered before the PI.
 
 ## Hardware
 
-All peripherals operate on **3.3V logic** and connect to the STM32.
+All peripherals operate on **3.3V logic** and connect to the STM32, except the
+INA219 (f), which sits on the ESP32's I2C.
 
 | # | Component | Qty | Notes |
 |---|---|---|---|
@@ -597,11 +565,8 @@ All peripherals operate on **3.3V logic** and connect to the STM32.
 | c | Pololu QTR-8A | 1 | 8-channel analog reflectance / line sensor |
 | d | OMRON E6B2 encoder | 2 | A/B channels; **500 PPR** (×4 = 2000 CPR) — see `config.h` |
 | e | E18-D80NK proximity | 4 | NPN digital; one per side |
-| f | MPU6050 IMU | 1 | 6-DOF gyro + accel (no magnetometer); I2C1 0x68, 3.3V |
-| g | VL53L0X TOF | 4 | I2C ranging; one per corner, behind the mux |
-| h | TCA9548A I2C mux | 1 | Fans out the 4 same-address VL53L0X |
-| i | INA219 | 2 | Bus-voltage sense (3S 0x40, 6S 0x41); no current sense |
-| j | Arduino UNO + 3.5" TFT | 1 | USB status display off the Jetson; no touch |
+| f | INA219 | 1 | Bus-voltage sense (3S, 0x40); no current sense; on the ESP32 (GPIO 6 SDA / 7 SCL) |
+| g | Arduino UNO + 3.5" TFT | 1 | USB status display off the Jetson; no touch |
 
 ---
 
@@ -616,17 +581,19 @@ All peripherals operate on **3.3V logic** and connect to the STM32.
 | Motor 2 (right): PWM/curr/DIR/SLEEP | PA11 (TIM1_CH4), PA3 (ADC_IN3), PB2, PB3 |
 | QTR-8A (analog) | PA4, PA5, PC0, PC1, PC2, PC3, PC4, PC5 |
 | Proximity (EXTI) | PC6 Front, PC7 Rear, PC8 Left, PC9 Right |
-| I2C1 bus | PB8 SCL, PB9 SDA (AF1; external 4.7 kΩ pull-ups) |
+| I2C1 bus (unused) | PB8 SCL, PB9 SDA (AF1; external 4.7 kΩ pull-ups) |
 | HX711 (bit-banged) | PB10 shared SCK; PB12–PB15 DOUT (FL, FR, RL, RR) |
 
 All four HX711s share SCK and are clocked in parallel. Proximity/HX711 facing and
-corner assignments are logical labels in `config.h`.
+corner assignments are logical labels in `config.h`. The motor/encoder
+**logical-side → hardware-channel mapping is also config-driven**
+(`MOTOR_CH_*`, `ENCODER_TIM_*`, plus the `*_INVERT_*` flags) — correct those four
+pairs after a drive test instead of rewiring.
 
-**I2C1 bus devices** (all 3.3 V logic, shared PB8/PB9): the MPU6050 IMU (0x68) and
-two INA219 (0x40 = 3S, 0x41 = 6S, voltage-sense only) sit directly on the bus; a
-TCA9548A mux (0x70) fans out four VL53L0X TOF sensors that all keep the default
-0x29 — the mux exposes one channel at a time, so they never collide. The IMU and
-INA219 are upstream of the mux and always reachable. No new STM32 pins are used.
+**I2C1 bus** (3.3 V logic, PB8/PB9): currently has no devices — the INA219
+moved to the ESP32. The HAL (100 kHz standard mode, kernel clock = SYSCLK),
+the bench scanner (`I2C_SCAN`), and the legacy direct battery driver
+(`BATTERY_VIA_STM32_I2C`) all remain in the tree for future expansion.
 
 ---
 
@@ -638,24 +605,24 @@ adds every leaf module folder to the include path):
 **`hal/` — bare-metal, talks to silicon only:**
 `mcu` (clock/SysTick/IWDG/reset cause) · `uart` (USART1 + DMA RX ring/TX) ·
 `pwm` (TIM1 + DIR/SLEEP) · `qenc` (TIM2/TIM3 quadrature) · `analog` (ADC+DMA scan) ·
-`i2c` (I2C1 master) · `flash` (last-page calibration storage).
+`i2c` (I2C1 master).
 
 **`app/` — libraries built on the HAL:**
 `proto` (frame codec + CRC + command/param dispatch) · `telemetry` (stream packing) ·
 `log` (fault-log ring) · `safety` (mode/function state machine + E-STOP + caution +
-heartbeat + cargo/current/TOF/LiDAR/battery monitors) · `control` (the per-tick chain) ·
-`nav` (standby/remote/line/traj navigators) · `ramp` · `odometry` · `pid` · `motors` ·
-`encoders` · `imu` (MPU6050) · `loadcells` (HX711) · `proximity` (EXTI) ·
-`tof` (VL53L0X ×4 via TCA9548A mux) · `lidar` (Jetson-pushed LaserScan segment buffer) ·
-`battery` (INA219 ×2 bus voltage).
+heartbeat + cargo/current/LiDAR/battery monitors) · `control` (the per-tick chain) ·
+`nav` (standby/remote/line navigators) · `ramp` · `odometry` · `pid` · `motors` ·
+`encoders` · `loadcells` (HX711) · `proximity` (EXTI) ·
+`lidar` (Jetson-pushed LaserScan segment buffer) · `battery` (ESP32-pushed INA219
+3S bus voltage; legacy direct-I2C driver behind `BATTERY_VIA_STM32_I2C`).
 
 Init order in `main.c`: `mcu → log → motors (SLEEP low) → encoders → proto → analog →
-loadcells → imu → tof → battery → lidar → safety → nav → load QTR cal → odometry → ramp →
-control → proximity → telemetry`, then the IWDG starts (TOF init is long but runs
-before the watchdog). The main loop drains RX, runs the heartbeat watch and sensor
-ticks (incl. round-robin TOF + battery), applies SLEEP, runs the 100 Hz control
-cadence (`encoders → odometry → monitors → control`, where `monitors` includes the
-TOF/LiDAR distance-band and 3S low-voltage checks), forwards logs, and emits due telemetry.
+loadcells → battery → lidar → safety → nav → odometry → ramp →
+control → proximity → telemetry`, then the IWDG starts. The main loop drains RX,
+runs the heartbeat watch and sensor ticks (incl. battery), applies SLEEP, runs the
+100 Hz control cadence (`encoders → odometry → monitors → control`, where `monitors`
+includes the LiDAR distance-band and 3S low-voltage checks), forwards logs, and
+emits due telemetry.
 
 ---
 

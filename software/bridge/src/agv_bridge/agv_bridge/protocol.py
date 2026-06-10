@@ -20,7 +20,7 @@ PKT_ACK = 0x05
 PKT_NACK = 0x06
 PKT_LOG = 0x08
 PKT_TLM_DRIVE = 0x09     # per-wheel control internals
-PKT_TLM_SENSORS = 0x0A   # load cells + IMU orientation
+PKT_TLM_SENSORS = 0x0A   # load cells + battery + LiDAR tail
 PKT_TLM_QTR = 0x0B       # QTR raw + line position
 PKT_RESET = 0xFF
 
@@ -32,11 +32,10 @@ CMD_VIRTUAL_ESTOP = 0x04
 CMD_OVERRIDE_ESTOP_SOURCE = 0x05
 CMD_OVERRIDE_CAUTION = 0x06
 CMD_READ_SENSOR = 0x07
-CMD_LOAD_TRAJECTORY = 0x08
 CMD_START_TARE = 0x09
 CMD_LOG_DUMP_REQUEST = 0x0A
 CMD_LOG_CLEAR = 0x0B
-CMD_QTR_CALIBRATE = 0x0C
+# 0x0C retired (was CMD_QTR_CALIBRATE — QTR is now self-calibrating)
 CMD_RESET_ODOMETRY = 0x0D
 CMD_LOAD_RAMP_CURVE = 0x0E
 
@@ -58,7 +57,7 @@ NACK_BUSY = 0x07
 #               u8 flags, f32 v, f32 w, f32 x, f32 y, f32 theta,
 #               u16 cur_l, u16 cur_r, u16 proximity, u8 led_mode,
 #               u8 led_indicator_cfg  → 43 bytes
-# estop/caution widened to 16 bits to carry the TOF + battery sources.
+# estop/caution are 16 bits (bit8 battery / bit9 LiDAR estop; bits 5+7 retired).
 _CORE_FMT = '<IBBHHfBfffffHHHBB'
 TLM_CORE_LEN = struct.calcsize(_CORE_FMT)
 assert TLM_CORE_LEN == 43, TLM_CORE_LEN
@@ -134,55 +133,32 @@ class TlmDrive:
                            self.encoder_left_counts, self.encoder_right_counts)
 
 
-# PKT_TLM_SENSORS: f32 load[4], f32 gyro_bias_dps, pitch, roll, u8 imu_status,
-#                  u16 tof_mm[4] (F,R,L,R), u16 batt_3s_mv, u16 batt_6s_mv  → 41 fixed bytes,
+# PKT_TLM_SENSORS: f32 load[4], u16 batt_3s_mv  → 18 fixed bytes,
 #                  then a variable u16 LiDAR tail (one mm per angular interval; may be empty).
-# MPU6050 (6-DOF, no magnetometer): no absolute yaw — the fused heading is in
-# TLM_CORE (odom_theta). The former yaw slot now carries the heading-KF gyro-bias
-# estimate (deg/s), and the former BNO055 calib byte is now imu_status bits:
-#   bit0 present, bit1 has_data, bit2 bias_converged, bit3 zupt_active.
-_SENSORS_FMT = '<4f3fB4HHH'
+_SENSORS_FMT = '<4fH'
 TLM_SENSORS_LEN = struct.calcsize(_SENSORS_FMT)
-assert TLM_SENSORS_LEN == 41, TLM_SENSORS_LEN
-
-IMU_STATUS_PRESENT        = 0x01
-IMU_STATUS_HAS_DATA       = 0x02
-IMU_STATUS_BIAS_CONVERGED = 0x04
-IMU_STATUS_ZUPT_ACTIVE    = 0x08
+assert TLM_SENSORS_LEN == 18, TLM_SENSORS_LEN
 
 
 @dataclass
 class TlmSensors:
     load_cells: Tuple[float, float, float, float]
-    imu_gyro_bias_dps: float
-    imu_pitch_deg: float
-    imu_roll_deg: float
-    imu_status: int
-    tof_mm: Tuple[int, int, int, int]
     batt_3s_mv: int
-    batt_6s_mv: int
     lidar_mm: Tuple[int, ...] = ()
 
     @classmethod
     def from_bytes(cls, payload: bytes) -> 'TlmSensors':
         if len(payload) < TLM_SENSORS_LEN:
             raise ValueError(f'sensors payload {len(payload)} < {TLM_SENSORS_LEN}')
-        (lc0, lc1, lc2, lc3, bias, p, r, status,
-         t0, t1, t2, t3, b3, b6) = struct.unpack(_SENSORS_FMT, payload[:TLM_SENSORS_LEN])
+        (lc0, lc1, lc2, lc3, b3) = struct.unpack(_SENSORS_FMT, payload[:TLM_SENSORS_LEN])
         tail = payload[TLM_SENSORS_LEN:]
         n = len(tail) // 2
         lidar = struct.unpack(f'<{n}H', tail[:n * 2]) if n else ()
-        return cls(load_cells=(lc0, lc1, lc2, lc3),
-                   imu_gyro_bias_dps=bias, imu_pitch_deg=p, imu_roll_deg=r,
-                   imu_status=status,
-                   tof_mm=(t0, t1, t2, t3), batt_3s_mv=b3, batt_6s_mv=b6,
+        return cls(load_cells=(lc0, lc1, lc2, lc3), batt_3s_mv=b3,
                    lidar_mm=tuple(lidar))
 
     def to_bytes(self) -> bytes:
-        fixed = struct.pack(_SENSORS_FMT, *self.load_cells,
-                            self.imu_gyro_bias_dps, self.imu_pitch_deg, self.imu_roll_deg,
-                            self.imu_status, *self.tof_mm,
-                            self.batt_3s_mv, self.batt_6s_mv)
+        fixed = struct.pack(_SENSORS_FMT, *self.load_cells, self.batt_3s_mv)
         tail = struct.pack(f'<{len(self.lidar_mm)}H', *self.lidar_mm)
         return fixed + tail
 

@@ -20,14 +20,13 @@ function PanelBtn({ onClick, children, color, dis, theme, disabled }) {
 }
 
 function StandbyPanel({ theme, agv, connected, telem }) {
-  const [qtrPhase, setQtrPhase] = React.useState('idle'); // idle | sweeping
-  const [weightCaution, setWeightCaution] = React.useState(80);
-  const [weightEstop, setWeightEstop] = React.useState(100);
-  const [tofCaution, setTofCaution] = React.useState(800);
-  const [tofCritical, setTofCritical] = React.useState(400);
-  const [tofEstop, setTofEstop] = React.useState(200);
-  const [battCaution, setBattCaution] = React.useState(10500);
-  const [battEstop, setBattEstop] = React.useState(9900);
+  const [weightCaution, setWeightCaution] = usePersistentState('standby.weightCaution', 80);
+  const [weightEstop, setWeightEstop] = usePersistentState('standby.weightEstop', 100);
+  const [lidarCaution, setLidarCaution] = usePersistentState('standby.lidarCaution', 800);
+  const [lidarCritical, setLidarCritical] = usePersistentState('standby.lidarCritical', 400);
+  const [lidarEstop, setLidarEstop] = usePersistentState('standby.lidarEstop', 200);
+  const [battCaution, setBattCaution] = usePersistentState('standby.battCaution', 10500);
+  const [battEstop, setBattEstop] = usePersistentState('standby.battEstop', 9900);
   const disabled = !connected;
 
   const send = (fn) => { if (!connected || !agv) return; try { fn(); } catch (_) {} };
@@ -54,22 +53,6 @@ function StandbyPanel({ theme, agv, connected, telem }) {
         </div>
       </div>
 
-      {/* QTR calibration */}
-      <div style={{ gridColumn: '1 / -1' }}>
-        <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>QTR Line Sensor Calibration</div>
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          <PanelBtn theme={theme} disabled={disabled} onClick={() => { send(() => agv.cmdQtrCalibrate(0)); setQtrPhase('sweeping'); }} dis={qtrPhase === 'sweeping'}>▶ Begin sweep</PanelBtn>
-          <PanelBtn theme={theme} disabled={disabled} color={theme.success} onClick={() => { send(() => agv.cmdQtrCalibrate(1)); setQtrPhase('idle'); }} dis={qtrPhase !== 'sweeping'}>✓ Save + persist</PanelBtn>
-          <PanelBtn theme={theme} disabled={disabled} color={theme.warn} onClick={() => { send(() => agv.cmdQtrCalibrate(2)); setQtrPhase('idle'); }} dis={qtrPhase !== 'sweeping'}>✗ Cancel</PanelBtn>
-          <PanelBtn theme={theme} disabled={disabled} color={theme.danger} onClick={() => send(() => agv.cmdQtrCalibrate(3))}>⌫ Reset to defaults</PanelBtn>
-        </div>
-        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
-          {qtrPhase === 'sweeping'
-            ? <span style={{ color: theme.warn }}>● Sweeping — move the AGV side-to-side across the line for ~3-5 s, then Save.</span>
-            : 'Begin a sweep, manually pass the array over the line a few times, then save to flash.'}
-        </div>
-      </div>
-
       {/* Cargo limits */}
       <div style={{ gridColumn: '1 / -1' }}>
         <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>Cargo Limits</div>
@@ -92,21 +75,21 @@ function StandbyPanel({ theme, agv, connected, telem }) {
         </div>
       </div>
 
-      {/* TOF distance bands */}
+      {/* LiDAR distance bands */}
       <div style={{ gridColumn: '1 / -1' }}>
-        <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>TOF Distance Bands (closest of 4 sensors)</div>
+        <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>LiDAR Distance Bands (closest fresh segment)</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px' }}>
           {[
-            ['Caution <', tofCaution, setTofCaution, 'TOF_CAUTION_MM', theme.warn],
-            ['Critical <', tofCritical, setTofCritical, 'TOF_CRITICAL_MM', theme.warn],
-            ['E-STOP <', tofEstop, setTofEstop, 'TOF_ESTOP_MM', theme.danger],
+            ['Caution <', lidarCaution, setLidarCaution, 'LIDAR_CAUTION_MM', theme.warn],
+            ['Critical <', lidarCritical, setLidarCritical, 'LIDAR_CRITICAL_MM', theme.warn],
+            ['E-STOP <', lidarEstop, setLidarEstop, 'LIDAR_ESTOP_MM', theme.danger],
           ].map(([label, val, setVal, paramName, col]) => (
             <div key={label}>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
                 <span style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont }}>{label}</span>
                 <span style={{ fontSize: '12px', color: col, fontFamily: theme.monoFont, fontWeight: 700 }}>{val} mm</span>
               </div>
-              <input type="range" min={50} max={1200} step={10} value={val}
+              <input type="range" min={50} max={3000} step={10} value={val}
                 onChange={e => setVal(parseInt(e.target.value))}
                 onMouseUp={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM[paramName], val))}
                 style={{ width: '100%', accentColor: col }} />
@@ -114,7 +97,7 @@ function StandbyPanel({ theme, agv, connected, telem }) {
           ))}
         </div>
         <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
-          Auto-clearing, like the IR ring. Keep E-STOP &lt; Critical &lt; Caution. <code>PARAM 0x60–0x62</code>.
+          Auto-clearing, like the IR ring; stale LiDAR (&gt;500 ms) reads as clear. Keep E-STOP &lt; Critical &lt; Caution. <code>PARAM 0x65–0x67</code>.
         </div>
       </div>
 
@@ -173,20 +156,9 @@ function StandbyPanel({ theme, agv, connected, telem }) {
                 ))}
               </div>
             </div>
-            <div>
-              <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginBottom: '4px' }}>Spread</div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                {[['▭ Fixed', window.AGV_PROTO.LED_INDICATOR_MODE.FIXED], ['◈ Responsive', window.AGV_PROTO.LED_INDICATOR_MODE.RESPONSIVE]].map(([lbl, v]) => (
-                  <PanelBtn theme={theme} disabled={disabled} key={v} color={((telem.ledIndicatorCfg >> 1) & 1) === v ? theme.success : theme.accent}
-                    onClick={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM.LED_INDICATOR_MODE, v))}>
-                    {((telem.ledIndicatorCfg >> 1) & 1) === v ? '● ' : ''}{lbl}
-                  </PanelBtn>
-                ))}
-              </div>
-            </div>
           </div>
           <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
-            One big ring maps each distance sensor to LEDs: IR red on detection, TOF / LiDAR yellow→red by range. Responsive widens the TOF span as range falls. <code>PARAM 0x51–0x52</code>.
+            One big ring maps each sensor to LEDs: IR red on detection, LiDAR arc yellow→red by range. <code>PARAM 0x51</code>.
           </div>
         </div>
       </div>
@@ -257,8 +229,9 @@ function RemoteControlPanel({ theme, telem, pressed, setPressed, speed, setSpeed
 }
 
 function LineFollowPanel({ theme, agv, connected, telem }) {
-  const [cruise, setCruise] = React.useState(0.3);
-  const [lostThresh, setLostThresh] = React.useState(0.5);
+  const [cruise, setCruise] = usePersistentState('lineFollow.cruise', 0.3);
+  const [lostThresh, setLostThresh] = usePersistentState('lineFollow.lostThresh', 300);
+  const [tBlack, setTBlack] = usePersistentState('lineFollow.tBlack', 2500);
   const send = (id, val) => { if (connected && agv) try { agv.sendParamUpdate(id, val); } catch (_) {} };
   const P = window.AGV_PROTO?.PARAM || {};
 
@@ -279,68 +252,33 @@ function LineFollowPanel({ theme, agv, connected, telem }) {
       <div>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
           <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Line-lost threshold</span>
-          <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.warn, fontWeight: 700 }}>{lostThresh.toFixed(2)}</span>
+          <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.warn, fontWeight: 700 }}>{lostThresh.toFixed(0)} cts</span>
         </div>
-        <input type="range" min={0.1} max={2.0} step={0.05} value={lostThresh}
+        <input type="range" min={0} max={1000} step={10} value={lostThresh}
           onChange={e => setLostThresh(parseFloat(e.target.value))}
           onMouseUp={() => send(P.QTR_LINE_LOST_THRESH, lostThresh)}
           style={{ width: '100%', accentColor: theme.warn }} />
-        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>Sum-of-normalised below this → halt + log LINE_LOST</div>
+        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>Array contrast (max−min ADC counts) below this → halt + log LINE_LOST (0 disables)</div>
+      </div>
+
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+          <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>T-bar black threshold</span>
+          <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.accent, fontWeight: 700 }}>{tBlack.toFixed(0)} cts</span>
+        </div>
+        <input type="range" min={500} max={4000} step={50} value={tBlack}
+          onChange={e => setTBlack(parseFloat(e.target.value))}
+          onMouseUp={() => send(P.LINE_T_BLACK, tBlack)}
+          style={{ width: '100%', accentColor: theme.accent }} />
+        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>Sensor reads "black" above this (raw ADC). 6+ black sensors = T-junction → 180° turn</div>
       </div>
 
       <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '14px', background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: '8px', padding: '10px 14px' }}>
         <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Line position</span>
-        <span style={{ fontSize: '12px', fontFamily: theme.monoFont, color: theme.accent, fontWeight: 700 }}>—</span>
-        <span style={{ marginLeft: 'auto', fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted }}>Not in telemetry yet · PID gains tunable on PID tab</span>
-      </div>
-    </div>
-  );
-}
-
-function TrajectoryPanel({ theme, agv, connected }) {
-  const [cruise, setCruise] = React.useState(0.3);
-  const [lookahead, setLookahead] = React.useState(0.5);
-  const [curvSlowdown, setCurvSlowdown] = React.useState(0.5);
-  const send = (id, val) => { if (connected && agv) try { agv.sendParamUpdate(id, val); } catch (_) {} };
-  const P = window.AGV_PROTO?.PARAM || {};
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-      <div style={{ background: theme.warn + '12', border: `1px solid ${theme.warn}55`, borderRadius: '8px', padding: '12px 14px', fontSize: '11px', fontFamily: theme.monoFont, color: theme.fg, lineHeight: 1.5 }}>
-        Pure-pursuit follower. Load and edit waypoints on the <strong style={{ color: theme.warn }}>Trajectory</strong> tab.
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Cruise speed</span>
-            <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.success, fontWeight: 700 }}>{cruise.toFixed(2)} m/s</span>
-          </div>
-          <input type="range" min={0.05} max={1.0} step={0.05} value={cruise}
-            onChange={e => setCruise(parseFloat(e.target.value))}
-            onMouseUp={() => send(P.TRAJ_CRUISE_MPS, cruise)}
-            style={{ width: '100%', accentColor: theme.success }} />
-        </div>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Lookahead Lᴅ</span>
-            <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.accent, fontWeight: 700 }}>{lookahead.toFixed(2)} m</span>
-          </div>
-          <input type="range" min={0.1} max={2.0} step={0.05} value={lookahead}
-            onChange={e => setLookahead(parseFloat(e.target.value))}
-            onMouseUp={() => send(P.TRAJ_LOOKAHEAD_M, lookahead)}
-            style={{ width: '100%', accentColor: theme.accent }} />
-        </div>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Curv. slowdown g</span>
-            <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.warn, fontWeight: 700 }}>{curvSlowdown.toFixed(2)} m</span>
-          </div>
-          <input type="range" min={0} max={2.0} step={0.05} value={curvSlowdown}
-            onChange={e => setCurvSlowdown(parseFloat(e.target.value))}
-            onMouseUp={() => send(P.TRAJ_CURV_SLOWDOWN, curvSlowdown)}
-            style={{ width: '100%', accentColor: theme.warn }} />
-          <div style={{ fontSize: '9px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '2px' }}>v = cruise/(1+g·|κ|) · 0 disables</div>
-        </div>
+        <span style={{ fontSize: '12px', fontFamily: theme.monoFont, color: theme.accent, fontWeight: 700 }}>
+          {typeof telem.qtrLinePosition === 'number' ? telem.qtrLinePosition.toFixed(3) : '—'}
+        </span>
+        <span style={{ marginLeft: 'auto', fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted }}>From TLM_QTR (streams during LINE_FOLLOW) · PID gains tunable on PID tab</span>
       </div>
     </div>
   );
@@ -350,30 +288,20 @@ function TrajectoryPanel({ theme, agv, connected }) {
 function DashboardTab({ telem, setFunc, setMode, theme, agv, connected, rcPressed, setRcPressed, rcSpeed, setRcSpeed, rcV, rcOmega }) {
   const { func, mode, estop, caution } = telem;
 
-  const functions = ['STANDBY', 'REMOTE_CONTROL', 'LINE_FOLLOW', 'TRAJECTORY_FOLLOW'];
+  const functions = ['STANDBY', 'REMOTE_CONTROL', 'LINE_FOLLOW'];
   const funcColors = {
     STANDBY: theme.accent,
     REMOTE_CONTROL: theme.warn,
     LINE_FOLLOW: theme.success,
-    TRAJECTORY_FOLLOW: theme.success,
   };
   const funcDescriptions = {
     STANDBY: 'Motors idle. Calibration & setup available.',
     REMOTE_CONTROL: 'Direct velocity commands from workstation.',
     LINE_FOLLOW: 'Following floor line via QTR-8A array.',
-    TRAJECTORY_FOLLOW: 'Executing pre-loaded waypoint sequence.',
   };
 
   const bgCard = theme.cardBg;
   const border = theme.border;
-
-  function FunctionPanel() {
-    if (func === 'STANDBY')          return <StandbyPanel theme={theme} agv={agv} connected={connected} telem={telem} />;
-    if (func === 'REMOTE_CONTROL')   return <RemoteControlPanel theme={theme} telem={telem} pressed={rcPressed} setPressed={setRcPressed} speed={rcSpeed} setSpeed={setRcSpeed} rcV={rcV} rcOmega={rcOmega} />;
-    if (func === 'LINE_FOLLOW')      return <LineFollowPanel theme={theme} agv={agv} connected={connected} telem={telem} />;
-    if (func === 'TRAJECTORY_FOLLOW')return <TrajectoryPanel theme={theme} agv={agv} connected={connected} />;
-    return null;
-  }
 
   return (
     <div style={{ padding: '16px', display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: 'auto auto 1fr', gap: '14px', height: '100%', boxSizing: 'border-box' }}>
@@ -426,7 +354,7 @@ function DashboardTab({ telem, setFunc, setMode, theme, agv, connected, rcPresse
       {/* Function selector — full width */}
       <div style={{ gridColumn: '1 / -1', background: bgCard, border: `1px solid ${border}`, borderRadius: '10px', padding: '18px' }}>
         <div style={{ fontSize: '10px', letterSpacing: '0.12em', color: theme.muted, marginBottom: '14px', fontFamily: theme.monoFont, textTransform: 'uppercase' }}>Navigation Function</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
           {functions.map(f => {
             const active = func === f;
             const col = funcColors[f];
@@ -453,7 +381,11 @@ function DashboardTab({ telem, setFunc, setMode, theme, agv, connected, rcPresse
         <div style={{ fontSize: '10px', letterSpacing: '0.12em', color: funcColors[func], marginBottom: '14px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 700 }}>
           {func.replace('_', ' ')} controls
         </div>
-        <FunctionPanel />
+        {/* Inlined (not a nested component) so the active panel keeps its identity
+            and in-progress edits across DashboardTab's telemetry-rate re-renders. */}
+        {func === 'STANDBY'           && <StandbyPanel theme={theme} agv={agv} connected={connected} telem={telem} />}
+        {func === 'REMOTE_CONTROL'    && <RemoteControlPanel theme={theme} telem={telem} pressed={rcPressed} setPressed={setRcPressed} speed={rcSpeed} setSpeed={setRcSpeed} rcV={rcV} rcOmega={rcOmega} />}
+        {func === 'LINE_FOLLOW'       && <LineFollowPanel theme={theme} agv={agv} connected={connected} telem={telem} />}
       </div>
     </div>
   );
@@ -462,9 +394,9 @@ function DashboardTab({ telem, setFunc, setMode, theme, agv, connected, rcPresse
 // ── Weight heat map — CSS radial gradients (GPU-smooth, no blinking) ─────────
 // QTR line sensors: 8 raw 12-bit ADC readings rendered as a horizontal heat strip.
 // Higher raw value = darker surface = line. CoM is computed per-frame after
-// in-frame min/max normalisation so the marker still tracks the line under
-// uneven ambient light (the firmware does this against calibrated white/black,
-// but we don't have those values here).
+// in-frame min/max normalisation so the marker tracks the line under uneven
+// ambient light without calibration — the same auto-ranging the firmware's
+// nav_line uses, so this marker matches the firmware's line_position.
 function QtrHeatmap({ values }) {
   const n = values.length;
   const adcMax = 4095;
@@ -579,9 +511,9 @@ function WeightHeatmap({ fl, fr, rl, rr, cogX, cogY }) {
 
 // ── Telemetry Tab ───────────────────────────────────────────────────────────
 function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
-  const { velocity, encoders, loadCells, imu, current, caution, motors, qtr } = telem;
-  const tof = telem.tof || { front: 0, rear: 0, left: 0, right: 0 };
-  const battery = telem.battery || { v3s: 0, v6s: 0, pct3s: null, pct6s: null };
+  const { velocity, encoders, loadCells, current, caution, motors, qtr } = telem;
+  const lidar = telem.lidar || [];
+  const battery = telem.battery || { v3s: 0, pct3s: null };
 
   const Card = ({ title, children, style: extraStyle }) => (
     <div style={{ background: theme.cardBg, border: `1px solid ${theme.border}`, borderRadius: '10px', padding: '16px', ...extraStyle }}>
@@ -660,24 +592,31 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         </div>
       </Card>
 
-      {/* Row 2: TOF Distance | Battery | (Velocity continues below) */}
-      <Card title="TOF Distance (VL53L0X)">
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-          {[['Front', tof.front], ['Rear', tof.rear], ['Left', tof.left], ['Right', tof.right]].map(([pos, mm]) => {
-            // Colour by band: red ≤200, amber ≤800, else fg. >=1200 reads as "clear".
-            const col = mm <= 200 ? theme.danger : mm <= 800 ? theme.warn : theme.fg;
-            const txt = mm >= 1200 ? '≥1200' : String(mm);
-            return (
-              <div key={pos} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', background: theme.bg, borderRadius: '6px', padding: '6px 8px', border: `1px solid ${theme.border}` }}>
-                <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted }}>{pos}</span>
-                <span style={{ fontSize: '13px', fontFamily: theme.monoFont, fontWeight: 700, color: col }}>{txt}<span style={{ fontSize: '9px', color: theme.muted, marginLeft: '2px' }}>mm</span></span>
+      {/* Row 2: LiDAR Segments | Battery | (Velocity continues below) */}
+      <Card title="LiDAR Segments (Jetson)">
+        {lidar.length === 0 ? (
+          <div style={{ fontSize: '11px', fontFamily: theme.monoFont, color: theme.muted }}>No fresh segments (stale / LiDAR off)</div>
+        ) : (() => {
+          const min = Math.min(...lidar);
+          const minCol = min <= 200 ? theme.danger : min <= 800 ? theme.warn : theme.fg;
+          return (
+            <div>
+              <Row label="Min distance" value={min >= 8000 ? 'clear' : min} unit={min >= 8000 ? '' : 'mm'} color={minCol} />
+              <Row label="Segments" value={lidar.length} />
+              <div style={{ display: 'flex', gap: '2px', alignItems: 'flex-end', height: '36px', marginTop: '6px' }}>
+                {lidar.map((mm, i) => {
+                  const t = Math.max(0, Math.min(1, mm / 2000));
+                  const col = mm <= 200 ? theme.danger : mm <= 800 ? theme.warn : theme.success;
+                  return <div key={i} style={{ flex: 1, height: `${Math.max(8, (1 - t) * 100)}%`, background: col, borderRadius: '2px', opacity: mm >= 8000 ? 0.2 : 0.9 }} title={`${mm} mm`} />;
+                })}
               </div>
-            );
-          })}
-        </div>
+              <div style={{ fontSize: '9px', fontFamily: theme.monoFont, color: theme.muted, textAlign: 'center', marginTop: '4px' }}>0° → MAX FOV (taller = closer)</div>
+            </div>
+          );
+        })()}
       </Card>
       <Card title="Battery">
-        {[['3S', battery.v3s, battery.pct3s], ['6S', battery.v6s, battery.pct6s]].map(([name, v, pct]) => {
+        {[['3S', battery.v3s, battery.pct3s]].map(([name, v, pct]) => {
           const absent = pct === null || pct === undefined;
           const col = absent ? theme.muted : pct <= 15 ? theme.danger : pct <= 35 ? theme.warn : theme.success;
           return (
@@ -696,7 +635,7 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         })}
       </Card>
 
-      {/* Velocity | Encoders | IMU */}
+      {/* Velocity | Encoders */}
       <Card title="Velocity">
         <Row label="Linear v" value={fmt(velocity.v, 3)} unit="m/s" color={theme.accent} />
         <Row label="Angular ω" value={fmt(velocity.omega, 3)} unit="rad/s" />
@@ -709,15 +648,7 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         <Row label="Left RPM" value={fmt(encoders.leftRpm, 1)} unit="rpm" color={theme.accent} />
         <Row label="Right RPM" value={fmt(encoders.rightRpm, 1)} unit="rpm" color={theme.accent} />
       </Card>
-      <Card title="IMU — MPU6050">
-        <Row label="Roll" value={fmt(imu.roll, 2)} unit="°" />
-        <Row label="Pitch" value={fmt(imu.pitch, 2)} unit="°" />
-        <Row label="Gyro bias" value={fmt(imu.gyroBias, 3)} unit="°/s" color={theme.accent} />
-        <Row label="Bias conv." value={imu.biasConverged ? 'yes' : 'no'}
-             color={imu.biasConverged ? theme.success : theme.warn} />
-        <Row label="ZUPT" value={imu.zuptActive ? 'active' : '—'}
-             color={imu.zuptActive ? theme.success : theme.muted} />
-      </Card>
+      <div />
 
       {/* Row 3: Weight Distribution | Load Cells | (empty) */}
       <Card title="Weight Distribution">

@@ -7,12 +7,10 @@
 #include "battery.h"
 #include "control.h"
 #include "encoders.h"
-#include "imu.h"
 #include "loadcells.h"
 #include "log.h"
 #include "motors.h"
 #include "nav.h"
-#include "nav_line.h"
 #include "odometry.h"
 #include "lidar.h"
 #include "proto.h"
@@ -20,7 +18,10 @@
 #include "ramp.h"
 #include "safety.h"
 #include "telemetry.h"
-#include "tof.h"
+
+#if I2C_SCAN
+#include "i2cscan.h"
+#endif
 
 /* =============================================================================
  *  AGV main entry.
@@ -32,9 +33,9 @@
  *    encoders → quadrature timers
  *    proto    → UART/DMA up to talk to the ESP32
  *    analog   → ADC + DMA (current + QTR)
- *    loadcells/imu → sensors (each may be DISABLE_*'d)
+ *    loadcells → sensors (each may be DISABLE_*'d)
  *    safety   → mode/estop/caution/heartbeat/monitors
- *    nav      → navigators; then load QTR cal from flash
+ *    nav      → navigators
  *    odometry/ramp/control → control chain (control reset calls ramp_reset)
  *    proximity → EXTI live; may immediately assert E-STOP
  *    telemetry → stream scheduler
@@ -84,6 +85,9 @@ static void forward_logs(void) {
 
 int main(void) {
     mcu_init();
+#if I2C_SCAN
+    i2cscan_run();     /* bench diagnostic: scans the bus over UART, never returns */
+#endif
     log_init();
     motors_init();
     encoders_init();
@@ -92,21 +96,14 @@ int main(void) {
 #if !DISABLE_LOAD_CELLS
     loadcells_init();
 #endif
-#if !DISABLE_IMU
-    imu_init();
-#endif
-#if !DISABLE_TOF
-    tof_init();        /* VL53L0X ×4 via mux; long but pre-IWDG */
-#endif
 #if !DISABLE_BATTERY
-    battery_init();    /* INA219 ×2 (3S/6S bus voltage) */
+    battery_init();    /* INA219 (3S bus voltage) */
 #endif
 #if !DISABLE_LIDAR
     lidar_init();      /* receive-side buffer for Jetson-pushed LaserScan segments */
 #endif
     safety_init();
     nav_init();
-    nav_line_load_calibration_from_flash();   /* falls back to defaults if absent/corrupt */
     odometry_init();
     ramp_init();
     control_init();
@@ -134,25 +131,20 @@ int main(void) {
 #if !DISABLE_LOAD_CELLS
         loadcells_tick(now, safety_function_is_navigating(safety_function()));
 #endif
-#if !DISABLE_IMU
-        imu_tick(now);
-#endif
-#if !DISABLE_TOF
-        tof_tick(now);       /* one sensor/pass; rate-limited internally */
-#endif
 #if !DISABLE_BATTERY
         battery_tick(now);
 #endif
-        if (nav_line_cal_active()) nav_line_cal_track();
 
         /* 4. SLEEP pin: run only when not E-STOPped and not idle. Applied before
          *    control so SLEEP is correct when control writes PWM. */
-#if !DISABLE_ESTOP
         {
+#if !DISABLE_ESTOP
             bool should_run = !safety_estop_active() && (safety_function() != FUNC_STANDBY);
+#else
+            bool should_run = (safety_function() != FUNC_STANDBY);
+#endif
             if (motors_enabled() != should_run) motors_set_enabled(should_run);
         }
-#endif
 
         /* 5. Control cadence: encoders → odometry → monitors → control. */
         if ((now - last_control) >= control_period_ms) {

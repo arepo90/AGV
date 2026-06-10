@@ -29,8 +29,9 @@
 #define PKT_NACK           0x06u
 #define PKT_LOG            0x08u   /* STM32→WS: one fault-log entry */
 #define PKT_TLM_DRIVE      0x09u   /* STM32→WS: per-wheel control internals */
-#define PKT_TLM_SENSORS    0x0Au   /* STM32→WS: load cells + IMU orientation */
+#define PKT_TLM_SENSORS    0x0Au   /* STM32→WS: load cells + battery + LiDAR tail */
 #define PKT_TLM_QTR        0x0Bu   /* STM32→WS: QTR raw + line position */
+#define PKT_BATTERY        0x0Cu   /* ESP32→STM32: pushed INA219 3S bus voltage (u16 mV LE) */
 #define PKT_RESET          0xFFu
 
 /* ---- CMD sub-types (first payload byte) ----------------------------------- */
@@ -41,11 +42,10 @@
 #define CMD_OVERRIDE_ESTOP_SOURCE  0x05u   /* u8 mask to force-clear */
 #define CMD_OVERRIDE_CAUTION       0x06u   /* f32 scalar */
 #define CMD_READ_SENSOR            0x07u   /* not implemented */
-#define CMD_LOAD_TRAJECTORY        0x08u   /* op=0 clear / op=1 append f32 x,y */
 #define CMD_START_TARE             0x09u
 #define CMD_LOG_DUMP_REQUEST       0x0Au
 #define CMD_LOG_CLEAR              0x0Bu
-#define CMD_QTR_CALIBRATE          0x0Cu   /* op 0=begin 1=save 2=cancel 3=defaults */
+/* 0x0C retired (was QTR_CALIBRATE — QTR is now self-calibrating) */
 #define CMD_RESET_ODOMETRY         0x0Du
 #define CMD_LOAD_RAMP_CURVE        0x0Eu   /* op 0=begin 1=add(s,f) 2=commit 3=cancel */
 
@@ -68,10 +68,8 @@
 #define PARAM_LINE_KI              0x21u
 #define PARAM_LINE_KD              0x22u
 #define PARAM_LINE_CRUISE_MPS      0x23u
-#define PARAM_TRAJ_CRUISE_MPS      0x24u
-#define PARAM_TRAJ_LOOKAHEAD_M     0x25u
 #define PARAM_QTR_LINE_LOST_THRESH 0x26u
-#define PARAM_TRAJ_CURV_SLOWDOWN   0x27u
+#define PARAM_LINE_T_BLACK         0x27u   /* T-bar "black" ADC threshold (counts) */
 /* Cargo thresholds + HX711 per-corner cal (corner = low nibble). */
 #define PARAM_WEIGHT_CAUTION_KG    0x30u
 #define PARAM_WEIGHT_ESTOP_KG      0x31u
@@ -89,13 +87,11 @@
 #define PARAM_LED_MODE             0x50u   /* animation: 0 = pulse, 1 = snake */
 #define PARAM_LED_BASE             0x51u   /* indicator ring base: 0 = off, 1 = white */
 #define PARAM_LED_INDICATOR_MODE   0x52u   /* indicator spread: 0 = fixed, 1 = responsive */
-/* TOF distance bands (mm) + 3S low-voltage thresholds (mV). */
-#define PARAM_TOF_CAUTION_MM       0x60u
-#define PARAM_TOF_CRITICAL_MM      0x61u
-#define PARAM_TOF_ESTOP_MM         0x62u
+/* 0x60–0x62 retired (were TOF distance bands — VL53L0X hardware removed). */
+/* 3S low-voltage thresholds (mV). */
 #define PARAM_BATT_3S_CAUTION_MV   0x63u
 #define PARAM_BATT_3S_ESTOP_MV     0x64u
-/* LiDAR distance bands (mm); same policy as TOF. */
+/* LiDAR distance bands (mm). */
 #define PARAM_LIDAR_CAUTION_MM     0x65u
 #define PARAM_LIDAR_CRITICAL_MM    0x66u
 #define PARAM_LIDAR_ESTOP_MM       0x67u

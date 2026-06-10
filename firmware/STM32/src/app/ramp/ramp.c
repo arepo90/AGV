@@ -20,13 +20,13 @@ typedef struct {
     float   peak_slope;
 } curve_t;
 
-static ramp_shape_t s_shape   = RAMP_SHAPE_LINEAR;
+static ramp_shape_t s_shape   = RAMP_SHAPE_EXPONENTIAL;
 static float        s_a_lin   = MAX_LINEAR_ACCEL_MPSS;
 static float        s_a_ang   = MAX_ANGULAR_ACCEL_RADPSS;
 static float        s_j_lin   = 4.0f;
 static float        s_j_ang   = 10.0f;
-static float        s_tau_lin = 0.30f;
-static float        s_tau_ang = 0.20f;
+static float        s_tau_lin = 0.01f;
+static float        s_tau_ang = 0.01f;
 
 static axis_t  s_lin, s_ang;
 static curve_t s_curve_active, s_curve_build;

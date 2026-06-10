@@ -1,4 +1,4 @@
-uint16 source_mask          # bits to force-clear (see ESTOP_SRC_*; bit7=TOF, bit8=battery)
+uint16 source_mask          # bits to force-clear (see ESTOP_SRC_*; bit8=battery, bit9=LiDAR)
 ---
 bool success
 uint8 nack_code
