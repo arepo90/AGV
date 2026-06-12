@@ -23,14 +23,23 @@ static float    s_position = 0.0f;
 static float    s_cruise_mps      = LINE_FOLLOW_CRUISE_MPS;
 static float    s_min_contrast    = QTR_MIN_CONTRAST_COUNTS;   /* ADC counts (max-min) */
 static float    s_t_black         = LINE_T_BLACK_COUNTS;       /* ADC counts, absolute */
+static uint32_t s_t_min_sensors   = LINE_T_MIN_SENSORS;        /* ≥ this many black = T bar */
+static uint32_t s_t_debounce      = LINE_T_DEBOUNCE_TICKS;
+static uint32_t s_reacq_ticks     = LINE_REACQUIRE_TICKS;
+static bool     s_turn_ccw        = (LINE_TURN_CCW != 0);
+static float    s_turn_omega_radps = LINE_TURN_OMEGA_RADPS;
+static float    s_turn_blind_rad  = LINE_TURN_BLIND_RAD;
+static float    s_turn_max_rad    = LINE_TURN_MAX_RAD;
+static float    s_turn_timeout_ms = (float)LINE_TURN_TIMEOUT_MS;
 
 static lf_state_t s_state = LF_FOLLOW;
 static uint32_t s_t_streak = 0;        /* consecutive frames matching the T bar */
+static uint32_t s_reacq_streak = 0;    /* consecutive line-visible frames in the search */
 static float    s_turn_swept = 0.0f;   /* |Δθ| integrated over the turn (rad) */
 static float    s_turn_elapsed_s = 0.0f;
 static float    s_theta_prev = 0.0f;
 
-#define LINE_TURN_OMEGA  (LINE_TURN_CCW ? LINE_TURN_OMEGA_RADPS : -LINE_TURN_OMEGA_RADPS)
+#define LINE_TURN_OMEGA  (s_turn_ccw ? s_turn_omega_radps : -s_turn_omega_radps)
 
 static float wrap_pi(float a) {
     while (a >  (float)M_PI) a -= 2.0f * (float)M_PI;
@@ -82,19 +91,26 @@ void nav_line_get(float dt_s, float *v_target, float *omega_target) {
         s_turn_swept += fabsf(wrap_pi(th - s_theta_prev));   /* θ is wrapped ±π */
         s_theta_prev = th;
 
-        if (s_state == LF_TURN_BLIND && s_turn_swept >= LINE_TURN_BLIND_RAD)
+        if (s_state == LF_TURN_BLIND && s_turn_swept >= s_turn_blind_rad)
             s_state = LF_TURN_SEARCH;
 
+        /* Reacquisition is debounced: one noisy frame of floor sheen passing the
+         * contrast test must not resume FOLLOW (the next frame would go
+         * LINE_LOST and stop mid-turn, far from the line). */
         bool line_visible = (float)(mx - mn) >= s_min_contrast &&
-                            nblack < LINE_T_MIN_SENSORS;
-        if (s_state == LF_TURN_SEARCH && line_visible) {
+                            nblack < s_t_min_sensors;
+        if (s_state == LF_TURN_SEARCH && line_visible) s_reacq_streak++;
+        else                                           s_reacq_streak = 0;
+
+        if (s_reacq_streak >= s_reacq_ticks) {
             log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_LINE_REACQUIRED,
                        (uint32_t)(s_turn_swept * 1000.0f));
             s_state = LF_FOLLOW;
             s_t_streak = 0;
+            s_reacq_streak = 0;
             /* fall through — resume following on this same frame */
-        } else if (s_turn_swept >= LINE_TURN_MAX_RAD ||
-                   s_turn_elapsed_s * 1000.0f >= (float)LINE_TURN_TIMEOUT_MS) {
+        } else if (s_turn_swept >= s_turn_max_rad ||
+                   s_turn_elapsed_s * 1000.0f >= s_turn_timeout_ms) {
             log_record(LOG_MOD_NAV, LOG_SEV_WARN, LOG_CODE_LINE_TURN_FAILED,
                        (uint32_t)(s_turn_swept * 1000.0f));
             s_state = LF_FOLLOW;
@@ -106,10 +122,11 @@ void nav_line_get(float dt_s, float *v_target, float *omega_target) {
             *omega_target = LINE_TURN_OMEGA;
             return;
         }
-    } else if (nblack >= LINE_T_MIN_SENSORS) {
-        if (++s_t_streak >= LINE_T_DEBOUNCE_TICKS) {
+    } else if (nblack >= s_t_min_sensors) {
+        if (++s_t_streak >= s_t_debounce) {
             log_record(LOG_MOD_NAV, LOG_SEV_INFO, LOG_CODE_LINE_T_DETECTED, nblack);
             s_state = LF_TURN_BLIND;
+            s_reacq_streak = 0;
             s_turn_swept = 0.0f;
             s_turn_elapsed_s = 0.0f;
             s_theta_prev = odometry_theta();
@@ -173,3 +190,26 @@ void nav_line_set_cruise_mps(float v)    { if (v >= 0.0f && v <= 5.0f) s_cruise_
 void nav_line_set_lost_threshold(float t){ if (t >= 0.0f && t <= 4095.0f) s_min_contrast = t; }
 void nav_line_set_t_black_counts(float c){ if (c >= 0.0f && c <= 4095.0f) s_t_black = c; }
 void nav_line_set_gains(float kp, float ki, float kd) { pid_set_gains(&s_pid, kp, ki, kd); }
+
+void nav_line_set_t_min_sensors(float n) {
+    if (n >= 1.0f && n <= (float)ANALOG_QTR_COUNT) s_t_min_sensors = (uint32_t)(n + 0.5f);
+}
+void nav_line_set_t_debounce_ticks(float n) {
+    if (n >= 1.0f && n <= 100.0f) s_t_debounce = (uint32_t)(n + 0.5f);
+}
+void nav_line_set_reacquire_ticks(float n) {
+    if (n >= 1.0f && n <= 100.0f) s_reacq_ticks = (uint32_t)(n + 0.5f);
+}
+void nav_line_set_turn_ccw(float v)       { s_turn_ccw = (v >= 0.5f); }
+void nav_line_set_turn_omega_radps(float w) {
+    if (w >= 0.05f && w <= MAX_ANGULAR_SPEED_RADPS) s_turn_omega_radps = w;
+}
+void nav_line_set_turn_blind_rad(float a) {
+    if (a >= 0.0f && a <= 2.0f * (float)M_PI) s_turn_blind_rad = a;
+}
+void nav_line_set_turn_max_rad(float a) {
+    if (a >= 0.0f && a <= 4.0f * (float)M_PI) s_turn_max_rad = a;
+}
+void nav_line_set_turn_timeout_ms(float t) {
+    if (t >= 100.0f && t <= 60000.0f) s_turn_timeout_ms = t;
+}

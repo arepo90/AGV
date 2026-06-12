@@ -60,6 +60,14 @@ const AGV_PROTO = {
     LINE_CRUISE_MPS:      0x23,
     QTR_LINE_LOST_THRESH: 0x26,
     LINE_T_BLACK:         0x27,   // T-bar "black" ADC threshold (counts)
+    LINE_T_MIN_SENSORS:   0x28,   // ≥ this many black sensors = T bar
+    LINE_T_DEBOUNCE:      0x29,   // consecutive control frames before triggering
+    LINE_TURN_CCW:        0x2A,   // turn direction at the T: 1 = CCW, 0 = CW
+    LINE_TURN_OMEGA:      0x2B,   // on-axis turn rate (rad/s, pre caution clamp)
+    LINE_TURN_BLIND_RAD:  0x2C,   // blind sweep before searching for the line
+    LINE_TURN_MAX_RAD:    0x2D,   // swept this far without a line → give up
+    LINE_TURN_TIMEOUT_MS: 0x2E,   // hard time cap on the turn
+    LINE_REACQ_TICKS:     0x2F,   // consecutive line-visible frames to end the search
     WEIGHT_CAUTION_KG:    0x30,
     WEIGHT_ESTOP_KG:      0x31,
     IMBALANCE_CAUTION:    0x32,

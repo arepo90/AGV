@@ -24,13 +24,16 @@ void mcu_delay_ms(uint32_t ms) {
 }
 
 static void capture_reset_cause(void) {
+    /* POR/PDR (power-on or brown-out) also asserts NRST, setting PINRSTF
+     * alongside PORRSTF — so POR must be checked before PIN or every power
+     * dip reads as an external pin reset. PIN alone = a genuine NRST pull. */
     uint32_t csr = RCC->CSR;
     if      (csr & RCC_CSR_LPWRRSTF) s_reset_cause = RESET_CAUSE_LOW_POWER;
     else if (csr & RCC_CSR_WWDGRSTF) s_reset_cause = RESET_CAUSE_WATCHDOG;
     else if (csr & RCC_CSR_IWDGRSTF) s_reset_cause = RESET_CAUSE_WATCHDOG;
     else if (csr & RCC_CSR_SFTRSTF)  s_reset_cause = RESET_CAUSE_SOFTWARE;
-    else if (csr & RCC_CSR_PINRSTF)  s_reset_cause = RESET_CAUSE_PIN;
     else if (csr & RCC_CSR_PORRSTF)  s_reset_cause = RESET_CAUSE_POWER_ON;
+    else if (csr & RCC_CSR_PINRSTF)  s_reset_cause = RESET_CAUSE_PIN;
     RCC->CSR |= RCC_CSR_RMVF;   /* clear flags so the next reset is captured cleanly */
 }
 

@@ -85,20 +85,25 @@
 #define IND_IR_RR                 9
 
 /* Indicator-point table: { led_id, type, sensor_index }. led_id is the LED on
- * LED_INDICATOR_RING sitting at that sensor's physical location. */
+ * LED_INDICATOR_RING sitting at that sensor's physical location. The ring is
+ * wound the other way from the first guess: LED indices run mirrored
+ * left↔right about LED 60 (front), so FL/FR and RL/RR swap relative to the
+ * original table. */
 #define LED_IND_POINTS { \
-    { 50, IND_TYPE_IR, IND_IR_FL }, \
-    { 110, IND_TYPE_IR, IND_IR_RR }, \
-    { 70, IND_TYPE_IR, IND_IR_FR }, \
-    { 10, IND_TYPE_IR, IND_IR_RL }, \
+    { 50, IND_TYPE_IR, IND_IR_FR }, \
+    { 110, IND_TYPE_IR, IND_IR_RL }, \
+    { 70, IND_TYPE_IR, IND_IR_FL }, \
+    { 10, IND_TYPE_IR, IND_IR_RR }, \
 }
 
 /* LiDAR occupies an arc between two endpoint LEDs (the 0mm° and MAX_FOV° detections).
  * The N received segments map to evenly spaced bin centres along it (linear in LED
- * index, so pick endpoints on a span that doesn't cross the ring's 0 seam). */
+ * index — descending is fine; pick endpoints on a span that doesn't cross the
+ * ring's 0 seam). Endpoints are swapped vs the first guess for the same
+ * left↔right mirror as LED_IND_POINTS. */
 #define LED_LIDAR_MAX_SEGMENTS    32u       /* must match firmware LIDAR_MAX_SEGMENTS */
-#define LED_LIDAR_POINT_0         45       /* LED at lidar 0° */
-#define LED_LIDAR_POINT_MAX       75       /* LED at lidar MAX_FOV° */
+#define LED_LIDAR_POINT_0         75       /* LED at lidar 0° */
+#define LED_LIDAR_POINT_MAX       45       /* LED at lidar MAX_FOV° */
 
 /* Gradient + visibility ranges (mm): full red at/below MIN, yellow at MAX, base
  * (no indication) beyond MAX. */

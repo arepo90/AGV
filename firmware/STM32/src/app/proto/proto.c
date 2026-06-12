@@ -87,6 +87,14 @@ static bool param_apply_one(uint8_t id, float v) {
     case PARAM_LINE_CRUISE_MPS:      nav_line_set_cruise_mps(v);      break;
     case PARAM_QTR_LINE_LOST_THRESH: nav_line_set_lost_threshold(v);  break;
     case PARAM_LINE_T_BLACK:         nav_line_set_t_black_counts(v);  break;
+    case PARAM_LINE_T_MIN_SENSORS:   nav_line_set_t_min_sensors(v);   break;
+    case PARAM_LINE_T_DEBOUNCE:      nav_line_set_t_debounce_ticks(v); break;
+    case PARAM_LINE_TURN_CCW:        nav_line_set_turn_ccw(v);        break;
+    case PARAM_LINE_TURN_OMEGA:      nav_line_set_turn_omega_radps(v); break;
+    case PARAM_LINE_TURN_BLIND_RAD:  nav_line_set_turn_blind_rad(v);  break;
+    case PARAM_LINE_TURN_MAX_RAD:    nav_line_set_turn_max_rad(v);    break;
+    case PARAM_LINE_TURN_TIMEOUT_MS: nav_line_set_turn_timeout_ms(v); break;
+    case PARAM_LINE_REACQ_TICKS:     nav_line_set_reacquire_ticks(v); break;
 
     case PARAM_WEIGHT_CAUTION_KG: safety_set_weight_caution_kg(v);  break;
     case PARAM_WEIGHT_ESTOP_KG:   safety_set_weight_estop_kg(v);    break;

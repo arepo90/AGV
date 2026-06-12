@@ -52,6 +52,8 @@ const PARAM_SYNC = [
   { key: 'standby.lidarEstop',    def: 200,   pairs: v => [['LIDAR_ESTOP_MM', v]] },
   { key: 'standby.battCaution',   def: 10500, pairs: v => [['BATT_3S_CAUTION_MV', v]] },
   { key: 'standby.battEstop',     def: 9900,  pairs: v => [['BATT_3S_ESTOP_MV', v]] },
+  { key: 'standby.imbCaution',    def: 0.6,   pairs: v => [['IMBALANCE_CAUTION', v]] },
+  { key: 'standby.imbEstop',      def: 1.5,   pairs: v => [['IMBALANCE_ESTOP', v]] },
   { key: 'pid.gains',
     def: { left_kp: 5, left_ki: 0.5, left_kff: 0, right_kp: 5, right_ki: 0.5, right_kff: 0,
            line_kp: 3.0, line_ki: 0.0, line_kd: 0.0, line_cruise: 0.2 },
@@ -64,8 +66,17 @@ const PARAM_SYNC = [
   // After pid.gains: the Line Follow tab's cruise slider duplicates 0x23 and
   // should win (last tuple applied wins on the firmware side).
   { key: 'lineFollow.cruise',     def: 0.3,   pairs: v => [['LINE_CRUISE_MPS', v]] },
-  { key: 'lineFollow.lostThresh', def: 300,   pairs: v => [['QTR_LINE_LOST_THRESH', v]] },
+  { key: 'lineFollow.lostThresh', def: 100,   pairs: v => [['QTR_LINE_LOST_THRESH', v]] },
   { key: 'lineFollow.tBlack',     def: 2500,  pairs: v => [['LINE_T_BLACK', v]] },
+  { key: 'lineFollow.tMinSensors', def: 4,    pairs: v => [['LINE_T_MIN_SENSORS', v]] },
+  { key: 'lineFollow.tDebounce',  def: 3,     pairs: v => [['LINE_T_DEBOUNCE', v]] },
+  { key: 'lineFollow.reacqTicks', def: 5,     pairs: v => [['LINE_REACQ_TICKS', v]] },
+  { key: 'lineFollow.turnCcw',    def: 1,     pairs: v => [['LINE_TURN_CCW', v]] },
+  { key: 'lineFollow.turnOmega',  def: 1.0,   pairs: v => [['LINE_TURN_OMEGA', v]] },
+  // Angles persist in degrees (what the sliders show); the firmware takes radians.
+  { key: 'lineFollow.blindDeg',   def: 150,   pairs: v => [['LINE_TURN_BLIND_RAD', v * Math.PI / 180]] },
+  { key: 'lineFollow.maxSweepDeg', def: 345,  pairs: v => [['LINE_TURN_MAX_RAD', v * Math.PI / 180]] },
+  { key: 'lineFollow.timeoutS',   def: 8,     pairs: v => [['LINE_TURN_TIMEOUT_MS', v * 1000]] },
   { key: 'ramp.shape', def: 'EXPONENTIAL',
     pairs: s => [['RAMP_SHAPE', ({ LINEAR: 0, SCURVE: 1, EXPONENTIAL: 2, CUSTOM: 3 })[s] ?? 2]] },
   { key: 'ramp.params',

@@ -137,13 +137,16 @@
  * the auto-ranging centroid can't tell all-black from all-white, so a sensor
  * counts as "black" above LINE_T_BLACK_COUNTS (runtime-tunable, PARAM 0x27). */
 #define LINE_T_BLACK_COUNTS         4090    /* ADC counts (dark reads high); tune on the bench */
-#define LINE_T_MIN_SENSORS          6u       /* ≥ this many black sensors = T bar */
+#define LINE_T_MIN_SENSORS          4u       /* ≥ this many black sensors = T bar */
 #define LINE_T_DEBOUNCE_TICKS       3u       /* consecutive control frames before triggering */
 #define LINE_TURN_CCW               1        /* 1 = turn left at the T, 0 = right */
-#define LINE_TURN_OMEGA_RADPS       1.0f     /* on-axis turn rate (pre caution clamp) */
-#define LINE_TURN_BLIND_RAD         1.0f    /* ~150°: minimum sweep before looking for the line */
+#define LINE_TURN_OMEGA_RADPS       1.f     /* on-axis turn rate (pre caution clamp) */
+#define LINE_TURN_BLIND_RAD         2.61f   /* ~150°: minimum sweep before looking for the line */
 #define LINE_TURN_MAX_RAD           6.0f    /* ~330° swept without a line → give up (LINE_LOST) */
 #define LINE_TURN_TIMEOUT_MS        8000u    /* hard cap (covers frozen odometry) */
+#define LINE_REACQUIRE_TICKS        5u       /* consecutive line-visible frames to end the search —
+                                                a single noisy frame must not resume FOLLOW (it would
+                                                immediately go LINE_LOST and stop mid-turn) */
 
 /* ---- QTR-8A line sensor (per-frame auto-ranging; no calibration) ---------- */
 #define QTR_INVERT_ARRAY            0        /* 1 if sensor 7 is leftmost */
@@ -172,11 +175,11 @@
 #define HX711_CORNER_REAR_RIGHT     2
 #define HX711_DEFAULT_SCALE         (2.81e-5f)  /* counts → kg, shared by all cells; calibrated at runtime */
 #define HX711_DEFAULT_OFFSET        0           /* tare offset in raw counts */
-#define HX711_TIMEOUT_MS            50u
+#define HX711_TIMEOUT_MS            100u
 #define WEIGHT_TOTAL_CAUTION_KG     80.0f
 #define WEIGHT_TOTAL_ESTOP_KG       100.0f
-#define WEIGHT_IMBALANCE_CAUTION    0.20f    /* corner deviation fraction → CAUTION */
-#define WEIGHT_IMBALANCE_ESTOP      0.40f    /* → CRITICAL / E-STOP */
+#define WEIGHT_IMBALANCE_CAUTION    0.6f    /* corner deviation fraction → CAUTION */
+#define WEIGHT_IMBALANCE_ESTOP      1.5f    /* → CRITICAL / E-STOP */
 #define IMBALANCE_FLOOR_KG          5.0f     /* below this total, imbalance (caution + E-STOP) is noise — ignored */
 
 /* ---- Caution modifier levels ---------------------------------------------- */

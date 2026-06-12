@@ -209,15 +209,18 @@ navigator → ramp (slew/shape) → caution clamp → kinematic split → per-wh
 
 **T-junction turnaround (LINE_FOLLOW):** a wide perpendicular bar at the end of
 the line blacks out the array. Detection is absolute — ≥ `LINE_T_MIN_SENSORS`
-sensors above `LINE_T_BLACK_COUNTS` (runtime-tunable, `PARAM 0x27`), debounced a
-few frames — because the auto-ranging centroid cannot tell all-black from
-all-white. The AGV then rotates on its own axis (direction `LINE_TURN_CCW`):
-blind for `LINE_TURN_BLIND_RAD` (~150°) of encoder-odometry heading so it clears
-the bar, then keeps rotating until the line is back in view, then resumes
+sensors above `LINE_T_BLACK_COUNTS`, debounced a few frames — because the
+auto-ranging centroid cannot tell all-black from all-white. The AGV then rotates
+on its own axis (direction `LINE_TURN_CCW`): blind for `LINE_TURN_BLIND_RAD`
+(~150°) of encoder-odometry heading so it clears the bar, then keeps rotating
+until the line is back in view — array contrast ≥ the line-lost threshold with
+fewer than `LINE_T_MIN_SENSORS` black, sustained for `LINE_REACQUIRE_TICKS`
+consecutive frames so one noisy frame can't end the search — then resumes
 following. The odometry gating self-adjusts to the caution modifier (no timing
 tune), so the turn requires `ODOMETRY`; watchdogs (`LINE_TURN_MAX_RAD`,
 `LINE_TURN_TIMEOUT_MS`) fall back to a logged `LINE_TURN_FAILED` + line-lost
-stop.
+stop. The whole T-turn parameter set is runtime-tunable (`PARAM 0x27`–`0x2F`,
+GUI Line Follow panel).
 
 ### Motion profile (ramp)
 
@@ -506,6 +509,10 @@ trigger a soft reset.
 | `0x23` | line cruise speed (m/s) |
 | `0x26` | QTR line-lost min contrast (max−min ADC counts; 0 disables) |
 | `0x27` | T-bar "black" threshold (absolute ADC counts; T-turn detection) |
+| `0x28` / `0x29` | T-bar min black sensors / debounce (control frames) |
+| `0x2A` / `0x2B` | T-turn direction (1 CCW / 0 CW) / on-axis turn rate (rad/s) |
+| `0x2C`–`0x2E` | T-turn blind sweep (rad) / max sweep (rad) / timeout (ms) |
+| `0x2F` | T-turn reacquire debounce (consecutive line-visible frames) |
 | `0x30`–`0x33` | weight caution / E-STOP (kg), imbalance caution / E-STOP (fraction) |
 | `0x34`–`0x37` | HX711 per-corner offset (counts) |
 | `0x38`–`0x3B` | HX711 per-corner scale (counts→kg) |

@@ -262,8 +262,11 @@ static uint8_t  s_lidar_band        = 0;   /* 0 clear,1 caution,2 critical,3 est
 
 void safety_set_weight_caution_kg(float kg)   { if (kg > 0.0f && kg < 1000.0f) s_w_caution_kg = kg; }
 void safety_set_weight_estop_kg(float kg)     { if (kg > 0.0f && kg < 1000.0f) s_w_estop_kg = kg; }
-void safety_set_imbalance_caution(float f)    { if (f > 0.0f && f < 1.0f) s_imbalance_caution = f; }
-void safety_set_imbalance_estop(float f)      { if (f > 0.0f && f < 1.0f) s_imbalance_estop = f; }
+/* The imbalance metric (worst |corner − mean| / mean) reaches 3.0 with all
+ * weight on one corner, and can exceed it if a cell reads negative (tare
+ * drift) — the guard only rejects garbage, not legal thresholds. */
+void safety_set_imbalance_caution(float f)    { if (f > 0.0f && f <= 10.0f) s_imbalance_caution = f; }
+void safety_set_imbalance_estop(float f)      { if (f > 0.0f && f <= 10.0f) s_imbalance_estop = f; }
 
 void safety_set_battery_caution_mv(float mv)  { if (mv > 5000.0f && mv < 30000.0f) s_batt_caution_mv = (uint16_t)mv; }
 void safety_set_battery_estop_mv(float mv)    { if (mv > 5000.0f && mv < 30000.0f) s_batt_estop_mv   = (uint16_t)mv; }

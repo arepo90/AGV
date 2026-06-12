@@ -22,14 +22,18 @@ function PanelBtn({ onClick, children, color, dis, theme, disabled }) {
 function StandbyPanel({ theme, agv, connected, telem }) {
   const [weightCaution, setWeightCaution] = usePersistentState('standby.weightCaution', 80);
   const [weightEstop, setWeightEstop] = usePersistentState('standby.weightEstop', 100);
+  const [imbCaution, setImbCaution] = usePersistentState('standby.imbCaution', 0.6);
+  const [imbEstop, setImbEstop] = usePersistentState('standby.imbEstop', 1.5);
   const [lidarCaution, setLidarCaution] = usePersistentState('standby.lidarCaution', 800);
   const [lidarCritical, setLidarCritical] = usePersistentState('standby.lidarCritical', 400);
   const [lidarEstop, setLidarEstop] = usePersistentState('standby.lidarEstop', 200);
   const [battCaution, setBattCaution] = usePersistentState('standby.battCaution', 10500);
   const [battEstop, setBattEstop] = usePersistentState('standby.battEstop', 9900);
   const disabled = !connected;
+  const P = window.AGV_PROTO?.PARAM || {};
 
   const send = (fn) => { if (!connected || !agv) return; try { fn(); } catch (_) {} };
+  const sendParam = (id, val) => send(() => agv.sendParamUpdate(id, val));
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
@@ -57,21 +61,22 @@ function StandbyPanel({ theme, agv, connected, telem }) {
       <div style={{ gridColumn: '1 / -1' }}>
         <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>Cargo Limits</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-          {[
-            ['Caution at', weightCaution, setWeightCaution, 'WEIGHT_CAUTION_KG', theme.warn, 200],
-            ['E-STOP at', weightEstop, setWeightEstop, 'WEIGHT_ESTOP_KG', theme.danger, 200],
-          ].map(([label, val, setVal, paramName, col, max]) => (
-            <div key={label}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                <span style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont }}>{label}</span>
-                <span style={{ fontSize: '12px', color: col, fontFamily: theme.monoFont, fontWeight: 700 }}>{val.toFixed(0)} kg</span>
-              </div>
-              <input type="range" min={10} max={max} step={5} value={val}
-                onChange={e => setVal(parseFloat(e.target.value))}
-                onMouseUp={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM[paramName], parseFloat(val)))}
-                style={{ width: '100%', accentColor: col }} />
-            </div>
-          ))}
+          <ParamSlider theme={theme} label="Weight caution at" value={weightCaution} setValue={setWeightCaution}
+            min={10} max={200} step={5} color={theme.warn} unit="kg"
+            onCommit={v => sendParam(P.WEIGHT_CAUTION_KG, v)} />
+          <ParamSlider theme={theme} label="Weight E-STOP at" value={weightEstop} setValue={setWeightEstop}
+            min={10} max={200} step={5} color={theme.danger} unit="kg"
+            onCommit={v => sendParam(P.WEIGHT_ESTOP_KG, v)} />
+          <ParamSlider theme={theme} label="Imbalance caution" value={imbCaution} setValue={setImbCaution}
+            min={0.05} max={3.0} step={0.05} color={theme.warn} unit="frac"
+            onCommit={v => sendParam(P.IMBALANCE_CAUTION, v)} />
+          <ParamSlider theme={theme} label="Imbalance E-STOP" value={imbEstop} setValue={setImbEstop}
+            min={0.05} max={3.0} step={0.05} color={theme.danger} unit="frac"
+            onCommit={v => sendParam(P.IMBALANCE_ESTOP, v)} />
+        </div>
+        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
+          Imbalance metric = worst corner's |weight − mean| / mean — NOT the CoM offset the
+          Telemetry heatmap shows. Ignored below 5 kg total. <code>PARAM 0x30–0x33</code>.
         </div>
       </div>
 
@@ -79,22 +84,15 @@ function StandbyPanel({ theme, agv, connected, telem }) {
       <div style={{ gridColumn: '1 / -1' }}>
         <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>LiDAR Distance Bands (closest fresh segment)</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px' }}>
-          {[
-            ['Caution <', lidarCaution, setLidarCaution, 'LIDAR_CAUTION_MM', theme.warn],
-            ['Critical <', lidarCritical, setLidarCritical, 'LIDAR_CRITICAL_MM', theme.warn],
-            ['E-STOP <', lidarEstop, setLidarEstop, 'LIDAR_ESTOP_MM', theme.danger],
-          ].map(([label, val, setVal, paramName, col]) => (
-            <div key={label}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                <span style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont }}>{label}</span>
-                <span style={{ fontSize: '12px', color: col, fontFamily: theme.monoFont, fontWeight: 700 }}>{val} mm</span>
-              </div>
-              <input type="range" min={50} max={3000} step={10} value={val}
-                onChange={e => setVal(parseInt(e.target.value))}
-                onMouseUp={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM[paramName], val))}
-                style={{ width: '100%', accentColor: col }} />
-            </div>
-          ))}
+          <ParamSlider theme={theme} label="Caution <" value={lidarCaution} setValue={setLidarCaution}
+            min={50} max={3000} step={10} color={theme.warn} unit="mm"
+            onCommit={v => sendParam(P.LIDAR_CAUTION_MM, v)} />
+          <ParamSlider theme={theme} label="Critical <" value={lidarCritical} setValue={setLidarCritical}
+            min={50} max={3000} step={10} color={theme.warn} unit="mm"
+            onCommit={v => sendParam(P.LIDAR_CRITICAL_MM, v)} />
+          <ParamSlider theme={theme} label="E-STOP <" value={lidarEstop} setValue={setLidarEstop}
+            min={50} max={3000} step={10} color={theme.danger} unit="mm"
+            onCommit={v => sendParam(P.LIDAR_ESTOP_MM, v)} />
         </div>
         <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
           Auto-clearing, like the IR ring; stale LiDAR (&gt;500 ms) reads as clear. Keep E-STOP &lt; Critical &lt; Caution. <code>PARAM 0x65–0x67</code>.
@@ -105,21 +103,12 @@ function StandbyPanel({ theme, agv, connected, telem }) {
       <div style={{ gridColumn: '1 / -1' }}>
         <div style={{ fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, marginBottom: '8px', fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600 }}>3S Battery Low-Voltage Limits</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-          {[
-            ['Caution <', battCaution, setBattCaution, 'BATT_3S_CAUTION_MV', theme.warn],
-            ['E-STOP <', battEstop, setBattEstop, 'BATT_3S_ESTOP_MV', theme.danger],
-          ].map(([label, val, setVal, paramName, col]) => (
-            <div key={label}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                <span style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont }}>{label}</span>
-                <span style={{ fontSize: '12px', color: col, fontFamily: theme.monoFont, fontWeight: 700 }}>{(val / 1000).toFixed(1)} V</span>
-              </div>
-              <input type="range" min={9000} max={12000} step={100} value={val}
-                onChange={e => setVal(parseInt(e.target.value))}
-                onMouseUp={() => send(() => agv.sendParamUpdate(window.AGV_PROTO.PARAM[paramName], val))}
-                style={{ width: '100%', accentColor: col }} />
-            </div>
-          ))}
+          <ParamSlider theme={theme} label="Caution <" value={battCaution} setValue={setBattCaution}
+            min={9000} max={12000} step={100} color={theme.warn} unit="mV"
+            onCommit={v => sendParam(P.BATT_3S_CAUTION_MV, v)} />
+          <ParamSlider theme={theme} label="E-STOP <" value={battEstop} setValue={setBattEstop}
+            min={9000} max={12000} step={100} color={theme.danger} unit="mV"
+            onCommit={v => sendParam(P.BATT_3S_ESTOP_MV, v)} />
         </div>
         <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, lineHeight: 1.5, marginTop: '8px' }}>
           3S only (motors/logic); auto-clears with hysteresis. The 6S rail is display-only. <code>PARAM 0x63–0x64</code>.
@@ -201,14 +190,8 @@ function RemoteControlPanel({ theme, telem, pressed, setPressed, speed, setSpeed
       </div>
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-            <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Speed limit</span>
-            <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.accent, fontWeight: 700 }}>{speed.toFixed(2)} m/s</span>
-          </div>
-          <input type="range" min={0.05} max={1.0} step={0.05} value={speed} onChange={e => setSpeed(parseFloat(e.target.value))}
-            style={{ width: '100%', accentColor: theme.accent }} />
-        </div>
+        <ParamSlider theme={theme} label="Speed limit" value={speed} setValue={setSpeed}
+          min={0.05} max={1.0} step={0.05} color={theme.accent} unit="m/s" />
 
         <div style={{ display: 'flex', gap: '14px' }}>
           {[['v', fmt(rcV, 3), 'm/s'], ['ω', fmt(rcOmega, 3), 'rad/s']].map(([label, val, unit]) => (
@@ -228,50 +211,139 @@ function RemoteControlPanel({ theme, telem, pressed, setPressed, speed, setSpeed
   );
 }
 
+// Module-scope (like PanelBtn): a stable identity across the telemetry-rate
+// re-renders so in-progress slider drags and text edits aren't interrupted.
+// Slider commits the param on release; the text field (GainRow-style draft
+// state) commits on Enter/blur and accepts values beyond the slider range —
+// the slider max stretches to follow, and the firmware setters clamp anyway.
+function ParamSlider({ theme, label, value, setValue, min, max, step, color, unit = '', note, onCommit }) {
+  const [draft, setDraft] = React.useState(null);   // null = not editing
+  const cancelRef = React.useRef(false);
+  const commit = (v) => { if (onCommit) onCommit(v); };
+  const acceptDraft = () => {
+    if (cancelRef.current) { cancelRef.current = false; setDraft(null); return; }
+    if (draft === null) return;
+    const n = parseFloat(draft);
+    setDraft(null);
+    if (!isNaN(n)) { setValue(n); commit(n); }
+  };
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+        <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <input type="text" inputMode="decimal" value={draft !== null ? draft : String(value)}
+            onFocus={() => setDraft(String(value))}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={acceptDraft}
+            onKeyDown={e => {
+              if (e.key === 'Enter') e.target.blur();
+              if (e.key === 'Escape') { cancelRef.current = true; e.target.blur(); }
+            }}
+            style={{
+              width: '64px', background: theme.bg, border: `1px solid ${draft !== null ? color : theme.border}`,
+              borderRadius: '5px', color, fontFamily: theme.monoFont, fontSize: '12px', fontWeight: 700,
+              padding: '3px 6px', textAlign: 'right', outline: 'none', transition: 'border-color 0.15s',
+            }} />
+          {unit && <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted }}>{unit}</span>}
+        </span>
+      </div>
+      <input type="range" min={min} max={Math.max(max, value)} step={step} value={value}
+        onChange={e => { setValue(parseFloat(e.target.value)); setDraft(null); }}
+        onMouseUp={() => commit(value)}
+        style={{ width: '100%', accentColor: color }} />
+      {note && <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>{note}</div>}
+    </div>
+  );
+}
+
 function LineFollowPanel({ theme, agv, connected, telem }) {
   const [cruise, setCruise] = usePersistentState('lineFollow.cruise', 0.3);
-  const [lostThresh, setLostThresh] = usePersistentState('lineFollow.lostThresh', 300);
+  const [lostThresh, setLostThresh] = usePersistentState('lineFollow.lostThresh', 100);
   const [tBlack, setTBlack] = usePersistentState('lineFollow.tBlack', 2500);
+  const [tMinSensors, setTMinSensors] = usePersistentState('lineFollow.tMinSensors', 4);
+  const [tDebounce, setTDebounce] = usePersistentState('lineFollow.tDebounce', 3);
+  const [reacqTicks, setReacqTicks] = usePersistentState('lineFollow.reacqTicks', 5);
+  const [turnCcw, setTurnCcw] = usePersistentState('lineFollow.turnCcw', 1);
+  const [turnOmega, setTurnOmega] = usePersistentState('lineFollow.turnOmega', 1.0);
+  const [blindDeg, setBlindDeg] = usePersistentState('lineFollow.blindDeg', 150);
+  const [maxSweepDeg, setMaxSweepDeg] = usePersistentState('lineFollow.maxSweepDeg', 345);
+  const [timeoutS, setTimeoutS] = usePersistentState('lineFollow.timeoutS', 8);
   const send = (id, val) => { if (connected && agv) try { agv.sendParamUpdate(id, val); } catch (_) {} };
   const P = window.AGV_PROTO?.PARAM || {};
+  const DEG = Math.PI / 180;   // firmware angles are radians; sliders show degrees
+
+  const secHd = (label) => (
+    <div style={{ gridColumn: '1 / -1', fontSize: '9px', letterSpacing: '0.14em', color: theme.muted, fontFamily: theme.monoFont, textTransform: 'uppercase', fontWeight: 600, marginBottom: '-6px' }}>{label}</div>
+  );
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Cruise speed</span>
-          <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.success, fontWeight: 700 }}>{cruise.toFixed(2)} m/s</span>
-        </div>
-        <input type="range" min={0.05} max={1.0} step={0.05} value={cruise}
-          onChange={e => setCruise(parseFloat(e.target.value))}
-          onMouseUp={() => send(P.LINE_CRUISE_MPS, cruise)}
-          style={{ width: '100%', accentColor: theme.success }} />
-        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>PARAM_LINE_CRUISE_MPS</div>
-      </div>
+      {secHd('Following')}
+      <ParamSlider theme={theme} label="Cruise speed" value={cruise} setValue={setCruise}
+        min={0.05} max={1.0} step={0.05} color={theme.success}
+        unit="m/s" note="PARAM_LINE_CRUISE_MPS"
+        onCommit={v => send(P.LINE_CRUISE_MPS, v)} />
+      <ParamSlider theme={theme} label="Line-lost threshold" value={lostThresh} setValue={setLostThresh}
+        min={0} max={1000} step={10} color={theme.warn}
+        unit="cts"
+        note="Array contrast (max−min ADC counts) below this → line not visible: halt + LINE_LOST while following, keep searching during the T-turn (0 disables)"
+        onCommit={v => send(P.QTR_LINE_LOST_THRESH, v)} />
 
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Line-lost threshold</span>
-          <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.warn, fontWeight: 700 }}>{lostThresh.toFixed(0)} cts</span>
-        </div>
-        <input type="range" min={0} max={1000} step={10} value={lostThresh}
-          onChange={e => setLostThresh(parseFloat(e.target.value))}
-          onMouseUp={() => send(P.QTR_LINE_LOST_THRESH, lostThresh)}
-          style={{ width: '100%', accentColor: theme.warn }} />
-        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>Array contrast (max−min ADC counts) below this → halt + log LINE_LOST (0 disables)</div>
-      </div>
+      {secHd('T-junction detection')}
+      <ParamSlider theme={theme} label="T-bar black threshold" value={tBlack} setValue={setTBlack}
+        min={500} max={4000} step={50} color={theme.accent}
+        unit="cts"
+        note='Sensor reads "black" above this (raw ADC)'
+        onCommit={v => send(P.LINE_T_BLACK, v)} />
+      <ParamSlider theme={theme} label="T-bar min sensors" value={tMinSensors} setValue={setTMinSensors}
+        min={2} max={8} step={1} color={theme.accent}
+        unit="/ 8"
+        note="≥ this many black sensors = T bar; also: search phase only reacquires with fewer black than this"
+        onCommit={v => send(P.LINE_T_MIN_SENSORS, v)} />
+      <ParamSlider theme={theme} label="T-bar debounce" value={tDebounce} setValue={setTDebounce}
+        min={1} max={10} step={1} color={theme.accent}
+        unit="ticks"
+        note="Consecutive control frames (100 Hz) over the bar before the turn triggers"
+        onCommit={v => send(P.LINE_T_DEBOUNCE, v)} />
 
+      {secHd('180° turnaround')}
       <div>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-          <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase' }}>T-bar black threshold</span>
-          <span style={{ fontSize: '13px', fontFamily: theme.monoFont, color: theme.accent, fontWeight: 700 }}>{tBlack.toFixed(0)} cts</span>
+        <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: '4px' }}>Turn direction</div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {[['↺ CCW (left)', 1], ['↻ CW (right)', 0]].map(([lbl, v]) => (
+            <PanelBtn theme={theme} key={v} color={turnCcw === v ? theme.success : theme.accent}
+              onClick={() => { setTurnCcw(v); send(P.LINE_TURN_CCW, v); }}>
+              {turnCcw === v ? '● ' : ''}{lbl}
+            </PanelBtn>
+          ))}
         </div>
-        <input type="range" min={500} max={4000} step={50} value={tBlack}
-          onChange={e => setTBlack(parseFloat(e.target.value))}
-          onMouseUp={() => send(P.LINE_T_BLACK, tBlack)}
-          style={{ width: '100%', accentColor: theme.accent }} />
-        <div style={{ fontSize: '10px', color: theme.muted, fontFamily: theme.monoFont, marginTop: '4px' }}>Sensor reads "black" above this (raw ADC). 6+ black sensors = T-junction → 180° turn</div>
       </div>
+      <ParamSlider theme={theme} label="Turn rate" value={turnOmega} setValue={setTurnOmega}
+        min={0.2} max={3.0} step={0.05} color={theme.success}
+        unit="rad/s"
+        note="On-axis ω during the turn (caution modifier still clamps it)"
+        onCommit={v => send(P.LINE_TURN_OMEGA, v)} />
+      <ParamSlider theme={theme} label="Blind sweep" value={blindDeg} setValue={setBlindDeg}
+        min={30} max={330} step={5} color={theme.warn}
+        unit="°"
+        note="Rotate at least this far (encoder odometry) before searching for the line — must clear the T bar from view"
+        onCommit={v => send(P.LINE_TURN_BLIND_RAD, v * DEG)} />
+      <ParamSlider theme={theme} label="Reacquire debounce" value={reacqTicks} setValue={setReacqTicks}
+        min={1} max={20} step={1} color={theme.warn}
+        unit="ticks"
+        note="Consecutive line-visible frames (100 Hz) before the search ends — rejects single-frame floor-sheen false positives"
+        onCommit={v => send(P.LINE_REACQ_TICKS, v)} />
+      <ParamSlider theme={theme} label="Max sweep" value={maxSweepDeg} setValue={setMaxSweepDeg}
+        min={180} max={700} step={5} color={theme.danger}
+        unit="°"
+        note="Swept this far without reacquiring → give up (LINE_TURN_FAILED + lost stop)"
+        onCommit={v => send(P.LINE_TURN_MAX_RAD, v * DEG)} />
+      <ParamSlider theme={theme} label="Turn timeout" value={timeoutS} setValue={setTimeoutS}
+        min={1} max={20} step={0.5} color={theme.danger}
+        unit="s"
+        note="Hard time cap on the whole turn (covers frozen odometry)"
+        onCommit={v => send(P.LINE_TURN_TIMEOUT_MS, v * 1000)} />
 
       <div style={{ gridColumn: '1 / -1', display: 'flex', gap: '14px', background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: '8px', padding: '10px 14px' }}>
         <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, textTransform: 'uppercase', letterSpacing: '0.1em' }}>Line position</span>
@@ -539,6 +611,20 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
   const cogXcm = cogXNorm * PLATFORM_HALF_CM;
   const cogYcm = cogYNorm * PLATFORM_HALF_CM;
 
+  // The firmware's imbalance metric (safety.c cargo_tick): worst corner's
+  // |weight − mean| / mean, ignored below the 5 kg floor. This is what the
+  // imbalance caution/E-STOP limits compare against — NOT the CoM above.
+  const IMBALANCE_FLOOR_KG = 5;
+  const [imbCautionLim] = usePersistentState('standby.imbCaution', 0.6);
+  const [imbEstopLim] = usePersistentState('standby.imbEstop', 1.5);
+  const imbMean = loadCells.total / 4;
+  const imbFrac = (loadCells.total >= IMBALANCE_FLOOR_KG && imbMean > 0)
+    ? Math.max(...[loadCells.fl, loadCells.fr, loadCells.rl, loadCells.rr].map(w => Math.abs(w - imbMean))) / imbMean
+    : null;
+  const imbColor = imbFrac === null ? theme.muted
+    : imbFrac >= imbEstopLim ? theme.danger
+    : imbFrac >= imbCautionLim ? theme.warn : theme.success;
+
   return (
     <div style={{ padding: '16px', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', overflowY: 'auto', height: '100%', boxSizing: 'border-box', alignContent: 'start' }}>
 
@@ -671,6 +757,11 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         </div>
         <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, textAlign: 'center', marginTop: '8px' }}>
           CoM: X {cogXcm >= 0 ? '+' : ''}{fmt(cogXcm, 1)} cm &nbsp; Y {cogYcm >= 0 ? '+' : ''}{fmt(cogYcm, 1)} cm
+        </div>
+        <div style={{ fontSize: '10px', fontFamily: theme.monoFont, textAlign: 'center', marginTop: '4px', color: imbColor }}>
+          Imbalance (firmware metric): {imbFrac === null
+            ? `— (under ${IMBALANCE_FLOOR_KG} kg floor)`
+            : `${(imbFrac * 100).toFixed(0)}% · limits ${(imbCautionLim * 100).toFixed(0)}/${(imbEstopLim * 100).toFixed(0)}%`}
         </div>
       </Card>
       <Card title="Line Sensors (QTR)" style={{ gridColumn: 'span 2' }}>

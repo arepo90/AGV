@@ -28,6 +28,14 @@ void  nav_line_set_cruise_mps(float v);
 void  nav_line_set_lost_threshold(float t);
 void  nav_line_set_t_black_counts(float counts);
 void  nav_line_set_gains(float kp, float ki, float kd);
+void  nav_line_set_t_min_sensors(float n);
+void  nav_line_set_t_debounce_ticks(float n);
+void  nav_line_set_reacquire_ticks(float n);
+void  nav_line_set_turn_ccw(float v);              /* >= 0.5 → CCW, else CW */
+void  nav_line_set_turn_omega_radps(float w);
+void  nav_line_set_turn_blind_rad(float a);
+void  nav_line_set_turn_max_rad(float a);
+void  nav_line_set_turn_timeout_ms(float t);
 
 /* Telemetry. */
 bool  nav_line_is_lost(void);

@@ -70,6 +70,14 @@
 #define PARAM_LINE_CRUISE_MPS      0x23u
 #define PARAM_QTR_LINE_LOST_THRESH 0x26u
 #define PARAM_LINE_T_BLACK         0x27u   /* T-bar "black" ADC threshold (counts) */
+#define PARAM_LINE_T_MIN_SENSORS   0x28u   /* ≥ this many black sensors = T bar */
+#define PARAM_LINE_T_DEBOUNCE      0x29u   /* consecutive control frames before triggering */
+#define PARAM_LINE_TURN_CCW        0x2Au   /* turn direction at the T: 1 = CCW, 0 = CW */
+#define PARAM_LINE_TURN_OMEGA      0x2Bu   /* on-axis turn rate (rad/s, pre caution clamp) */
+#define PARAM_LINE_TURN_BLIND_RAD  0x2Cu   /* blind sweep before searching for the line */
+#define PARAM_LINE_TURN_MAX_RAD    0x2Du   /* swept this far without a line → give up */
+#define PARAM_LINE_TURN_TIMEOUT_MS 0x2Eu   /* hard time cap on the turn */
+#define PARAM_LINE_REACQ_TICKS     0x2Fu   /* consecutive line-visible frames to end the search */
 /* Cargo thresholds + HX711 per-corner cal (corner = low nibble). */
 #define PARAM_WEIGHT_CAUTION_KG    0x30u
 #define PARAM_WEIGHT_ESTOP_KG      0x31u
