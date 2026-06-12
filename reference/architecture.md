@@ -564,7 +564,7 @@ INA219 (f), which sits on the ESP32's I2C.
 | b | CZL601 load cell + HX711 | 4 each | 100 kg/cell; one per cargo-platform corner |
 | c | Pololu QTR-8A | 1 | 8-channel analog reflectance / line sensor |
 | d | OMRON E6B2 encoder | 2 | A/B channels; **500 PPR** (×4 = 2000 CPR) — see `config.h` |
-| e | E18-D80NK proximity | 4 | NPN digital; one per side |
+| e | E18-D80NK proximity | 4 | NPN digital; one per cargo-platform corner |
 | f | INA219 | 1 | Bus-voltage sense (3S, 0x40); no current sense; on the ESP32 (GPIO 6 SDA / 7 SCL) |
 | g | Arduino UNO + 3.5" TFT | 1 | USB status display off the Jetson; no touch |
 
@@ -580,7 +580,7 @@ INA219 (f), which sits on the ESP32's I2C.
 | Motor 1 (left): PWM/curr/DIR/SLEEP | PA8 (TIM1_CH1), PA2 (ADC_IN2), PB0, PB1 |
 | Motor 2 (right): PWM/curr/DIR/SLEEP | PA11 (TIM1_CH4), PA3 (ADC_IN3), PB2, PB3 |
 | QTR-8A (analog) | PA4, PA5, PC0, PC1, PC2, PC3, PC4, PC5 |
-| Proximity (EXTI) | PC6 Front, PC7 Rear, PC8 Left, PC9 Right |
+| Proximity (EXTI) | PC6 FL, PC7 FR, PC8 RL, PC9 RR |
 | I2C1 bus (unused) | PB8 SCL, PB9 SDA (AF1; external 4.7 kΩ pull-ups) |
 | HX711 (bit-banged) | PB10 shared SCK; PB12–PB15 DOUT (FL, FR, RL, RR) |
 

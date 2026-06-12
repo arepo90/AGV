@@ -518,7 +518,7 @@ function makeEmptyTelem() {
     position: { x: 0, y: 0, theta: 0 },
     encoders: { left: 0, right: 0, leftRpm: 0, rightRpm: 0 },
     loadCells: { fl: 0, fr: 0, rl: 0, rr: 0, total: 0, cog: { x: 0, y: 0 } },
-    proximity: { front: false, rear: false, left: false, right: false },
+    proximity: { fl: false, fr: false, rl: false, rr: false },
     lidar: [],                                       // segmented LaserScan distances (mm)
     battery: { v3s: 0, pct3s: null },
     current: { left: 0, right: 0 },
@@ -601,8 +601,8 @@ function mergeCore(prev, payload) {
     position: { x: f32(23), y: f32(27), theta: f32(31) },
     current: { left: u16(35) / 1000.0, right: u16(37) / 1000.0 },
     proximity: {
-      front: !!(proxBits & 0x40), rear:  !!(proxBits & 0x80),
-      left:  !!(proxBits & 0x100), right: !!(proxBits & 0x200),
+      fl: !!(proxBits & 0x40), fr: !!(proxBits & 0x80),
+      rl: !!(proxBits & 0x100), rr: !!(proxBits & 0x200),
     },
     flags: {
       adc_data: !!(flags & 0x01), hx711_data: !!(flags & 0x02),

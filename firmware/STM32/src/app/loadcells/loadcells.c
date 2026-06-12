@@ -4,13 +4,20 @@
 #include "stm32f0xx.h"
 
 #define SCK_BIT         10u
-#define DOUT_BIT(c)     ((c) + 12u)                  /* corners 0..3 → PB12..PB15 */
+#define DOUT_BIT(c)     ((c) + 12u)                  /* physical DOUT index 0..3 → PB12..PB15 */
 #define DOUT_MASK       ((1u<<12)|(1u<<13)|(1u<<14)|(1u<<15))
 #define TARE_SAMPLES    20u
 
-static int32_t  s_raw[HX711_NUM_CORNERS];
-static int32_t  s_offset[HX711_NUM_CORNERS];
-static float    s_scale[HX711_NUM_CORNERS];
+/* Logical corner (0=FL, 1=FR, 2=RL, 3=RR — telemetry/GUI order) → physical
+ * DOUT index, from the wiring constants in config.h. */
+static const uint32_t s_corner_map[HX711_NUM_CORNERS] = {
+    HX711_CORNER_FRONT_LEFT, HX711_CORNER_FRONT_RIGHT,
+    HX711_CORNER_REAR_LEFT,  HX711_CORNER_REAR_RIGHT,
+};
+
+static int32_t  s_raw[HX711_NUM_CORNERS];      /* indexed by physical DOUT pin */
+static int32_t  s_offset[HX711_NUM_CORNERS];   /* indexed by physical DOUT pin */
+static float    s_scale;                       /* counts → kg, shared by all cells */
 static bool     s_have_data = false;
 #if !DISABLE_LOAD_CELLS
 static uint32_t s_last_read_ms = 0;
@@ -66,8 +73,8 @@ void loadcells_init(void) {
     for (uint32_t c = 0; c < HX711_NUM_CORNERS; c++) {
         s_raw[c]    = 0;
         s_offset[c] = HX711_DEFAULT_OFFSET;
-        s_scale[c]  = HX711_DEFAULT_SCALE;
     }
+    s_scale = HX711_DEFAULT_SCALE;
     s_have_data = false;
     s_tare_active = false;
 }
@@ -112,7 +119,8 @@ bool loadcells_has_data(void) { return s_have_data; }
 
 float loadcells_kg(uint32_t corner) {
     if (corner >= HX711_NUM_CORNERS) return 0.0f;
-    return (float)(s_raw[corner] - s_offset[corner]) * s_scale[corner];
+    uint32_t phys = s_corner_map[corner];
+    return (float)(s_raw[phys] - s_offset[phys]) * s_scale;
 }
 
 float loadcells_total_kg(void) {
@@ -121,8 +129,16 @@ float loadcells_total_kg(void) {
     return t;
 }
 
-void loadcells_set_offset(uint32_t c, int32_t v) { if (c < HX711_NUM_CORNERS) s_offset[c] = v; }
-void loadcells_set_scale (uint32_t c, float v)   { if (c < HX711_NUM_CORNERS) s_scale[c]  = v; }
+void loadcells_set_offset(uint32_t corner, int32_t v) {
+    if (corner < HX711_NUM_CORNERS) s_offset[s_corner_map[corner]] = v;
+}
+
+/* Single scale shared by all cells — corner id accepted (any of PARAM 0x38-0x3B)
+ * but ignored; all cells get the same factor. */
+void loadcells_set_scale(uint32_t corner, float v) {
+    (void)corner;
+    s_scale = v;
+}
 
 void loadcells_start_tare(void) {
     for (uint32_t c = 0; c < HX711_NUM_CORNERS; c++) s_tare_accum[c] = 0;

@@ -107,7 +107,7 @@ function createMockTelemetry() {
     position: { x: 0.0, y: 0.0, theta: 0.0 },
     encoders: { left: 0, right: 0, leftRpm: 0, rightRpm: 0 },
     loadCells: { fl: 0, fr: 0, rl: 0, rr: 0, total: 0, cog: { x: 0, y: 0 } },
-    proximity: { front: false, rear: false, left: false, right: false },
+    proximity: { fl: false, fr: false, rl: false, rr: false },
     battery: { v3s: 0, pct3s: null },
     current: { left: 0, right: 0 },
     qtr: [0,0,0,0,0,0,0,0],

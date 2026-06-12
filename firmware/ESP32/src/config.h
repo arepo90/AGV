@@ -78,32 +78,32 @@
 #define IND_TYPE_LIDAR            2         /* used internally for the lidar arc; not in the table */
 
 /* Sensor indices: IR = proximity_obstructed bit positions PC6..PC9 =
- * Front,Rear,Left,Right. */
-#define IND_IR_FRONT              6
-#define IND_IR_REAR               7
-#define IND_IR_LEFT               8
-#define IND_IR_RIGHT              9
+ * FL,FR,RL,RR (one per cargo-platform corner, same convention as the load cells). */
+#define IND_IR_FL                 6
+#define IND_IR_FR                 7
+#define IND_IR_RL                 8
+#define IND_IR_RR                 9
 
 /* Indicator-point table: { led_id, type, sensor_index }. led_id is the LED on
  * LED_INDICATOR_RING sitting at that sensor's physical location. */
-#define LED_IND_POINTS  { \
-    {  110, IND_TYPE_IR,  IND_IR_FRONT  }, \
-    {  50, IND_TYPE_IR,  IND_IR_RIGHT  }, \
-    {  10, IND_TYPE_IR,  IND_IR_REAR   }, \
-    { 68, IND_TYPE_IR,  IND_IR_LEFT   }, \
+#define LED_IND_POINTS { \
+    { 50, IND_TYPE_IR, IND_IR_FL }, \
+    { 110, IND_TYPE_IR, IND_IR_RR }, \
+    { 70, IND_TYPE_IR, IND_IR_FR }, \
+    { 10, IND_TYPE_IR, IND_IR_RL }, \
 }
 
-/* LiDAR occupies an arc between two endpoint LEDs (the 0° and MAX_FOV° detections).
+/* LiDAR occupies an arc between two endpoint LEDs (the 0mm° and MAX_FOV° detections).
  * The N received segments map to evenly spaced bin centres along it (linear in LED
  * index, so pick endpoints on a span that doesn't cross the ring's 0 seam). */
 #define LED_LIDAR_MAX_SEGMENTS    32u       /* must match firmware LIDAR_MAX_SEGMENTS */
-#define LED_LIDAR_POINT_0         110       /* LED at lidar 0° */
-#define LED_LIDAR_POINT_MAX       119       /* LED at lidar MAX_FOV° */
+#define LED_LIDAR_POINT_0         45       /* LED at lidar 0° */
+#define LED_LIDAR_POINT_MAX       75       /* LED at lidar MAX_FOV° */
 
 /* Gradient + visibility ranges (mm): full red at/below MIN, yellow at MAX, base
  * (no indication) beyond MAX. */
-#define LED_LIDAR_MIN_MM          200
-#define LED_LIDAR_MAX_MM          2000
+#define LED_LIDAR_MIN_MM          400
+#define LED_LIDAR_MAX_MM          1500
 
 /* Half-spread = LEDs lit on each side of a point (total span = 2·half + 1). */
 #define LED_IR_HALFSPREAD         2

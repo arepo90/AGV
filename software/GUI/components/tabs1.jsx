@@ -583,7 +583,7 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
       </Card>
       <Card title="Proximity">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-          {[['Front', telem.proximity.front], ['Rear', telem.proximity.rear], ['Left', telem.proximity.left], ['Right', telem.proximity.right]].map(([pos, active]) => (
+          {[['FL', telem.proximity.fl], ['FR', telem.proximity.fr], ['RL', telem.proximity.rl], ['RR', telem.proximity.rr]].map(([pos, active]) => (
             <div key={pos} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: active ? theme.danger + '18' : theme.bg, borderRadius: '6px', padding: '6px 8px', border: `1px solid ${active ? theme.danger : theme.border}`, transition: 'all 0.1s' }}>
               <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: active ? theme.danger : theme.border, boxShadow: active ? `0 0 5px ${theme.danger}` : 'none', flexShrink: 0 }} />
               <span style={{ fontSize: '10px', fontFamily: theme.monoFont, color: active ? theme.danger : theme.muted, fontWeight: active ? 700 : 400 }}>{pos}</span>
@@ -648,20 +648,6 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         <Row label="Left RPM" value={fmt(encoders.leftRpm, 1)} unit="rpm" color={theme.accent} />
         <Row label="Right RPM" value={fmt(encoders.rightRpm, 1)} unit="rpm" color={theme.accent} />
       </Card>
-      <div />
-
-      {/* Row 3: Weight Distribution | Load Cells | (empty) */}
-      <Card title="Weight Distribution">
-        <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
-          <div style={{ flex: 1 }}>
-            <WeightHeatmap fl={loadCells.fl} fr={loadCells.fr} rl={loadCells.rl} rr={loadCells.rr} cogX={cogXNorm} cogY={cogYNorm} />
-          </div>
-          <HeatLegend />
-        </div>
-        <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, textAlign: 'center', marginTop: '8px' }}>
-          CoM: X {cogXcm >= 0 ? '+' : ''}{fmt(cogXcm, 1)} cm &nbsp; Y {cogYcm >= 0 ? '+' : ''}{fmt(cogYcm, 1)} cm
-        </div>
-      </Card>
       <Card title="Load Cells">
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginBottom: '10px' }}>
           {[['FL', loadCells.fl], ['FR', loadCells.fr], ['RL', loadCells.rl], ['RR', loadCells.rr]].map(([pos, val]) => (
@@ -674,13 +660,22 @@ function TelemetryTab({ telem, theme, rcActive, rcV, rcOmega, rcPressed }) {
         </div>
         <Row label="Total" value={fmt(loadCells.total, 1)} unit="kg" color={theme.accent} />
       </Card>
-      <div />
 
-      {/* Row 4: Line Sensors (span 2) | (empty) */}
+      {/* Row 3: Weight Distribution | Line Sensors (span 2) */}
+      <Card title="Weight Distribution">
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <WeightHeatmap fl={loadCells.fl} fr={loadCells.fr} rl={loadCells.rl} rr={loadCells.rr} cogX={cogXNorm} cogY={cogYNorm} />
+          </div>
+          <HeatLegend />
+        </div>
+        <div style={{ fontSize: '10px', fontFamily: theme.monoFont, color: theme.muted, textAlign: 'center', marginTop: '8px' }}>
+          CoM: X {cogXcm >= 0 ? '+' : ''}{fmt(cogXcm, 1)} cm &nbsp; Y {cogYcm >= 0 ? '+' : ''}{fmt(cogYcm, 1)} cm
+        </div>
+      </Card>
       <Card title="Line Sensors (QTR)" style={{ gridColumn: 'span 2' }}>
         <QtrHeatmap values={qtr && qtr.length === 8 ? qtr : [0,0,0,0,0,0,0,0]} />
       </Card>
-      <div />
     </div>
   );
 }

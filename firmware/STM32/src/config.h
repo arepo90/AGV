@@ -141,8 +141,8 @@
 #define LINE_T_DEBOUNCE_TICKS       3u       /* consecutive control frames before triggering */
 #define LINE_TURN_CCW               1        /* 1 = turn left at the T, 0 = right */
 #define LINE_TURN_OMEGA_RADPS       1.0f     /* on-axis turn rate (pre caution clamp) */
-#define LINE_TURN_BLIND_RAD         1f    /* ~150°: minimum sweep before looking for the line */
-#define LINE_TURN_MAX_RAD           6f    /* ~330° swept without a line → give up (LINE_LOST) */
+#define LINE_TURN_BLIND_RAD         1.0f    /* ~150°: minimum sweep before looking for the line */
+#define LINE_TURN_MAX_RAD           6.0f    /* ~330° swept without a line → give up (LINE_LOST) */
 #define LINE_TURN_TIMEOUT_MS        8000u    /* hard cap (covers frozen odometry) */
 
 /* ---- QTR-8A line sensor (per-frame auto-ranging; no calibration) ---------- */
@@ -161,13 +161,16 @@
 #define PWM_FREQ_HZ                 20000u   /* 20 kHz: above audible, within Pololu G2 spec */
 #define PWM_PERIOD                  (SYSCLK_HZ / PWM_FREQ_HZ)   /* TIM1 ARR+1 */
 
-/* ---- Cargo / load cells (per-corner: FL, FR, RL, RR) ---------------------- */
+/* ---- Cargo / load cells (per-corner: FL, FR, RL, RR) ----------------------
+ * HX711_CORNER_* map each logical corner (FL/FR/RL/RR — telemetry/GUI order)
+ * to the physical DOUT pin it's wired to (0..3 → PB12..PB15). Correct these
+ * four after a bench check instead of re-wiring. */
 #define HX711_NUM_CORNERS           4u
-#define HX711_CORNER_FRONT_LEFT     0        /* PB12 */
-#define HX711_CORNER_FRONT_RIGHT    1        /* PB13 */
-#define HX711_CORNER_REAR_LEFT      2        /* PB14 */
-#define HX711_CORNER_REAR_RIGHT     3        /* PB15 */
-#define HX711_DEFAULT_SCALE         (5.7e-5f)  /* counts → kg per cell; calibrated at runtime */
+#define HX711_CORNER_FRONT_LEFT     3
+#define HX711_CORNER_FRONT_RIGHT    0
+#define HX711_CORNER_REAR_LEFT      1
+#define HX711_CORNER_REAR_RIGHT     2
+#define HX711_DEFAULT_SCALE         (2.81e-5f)  /* counts → kg, shared by all cells; calibrated at runtime */
 #define HX711_DEFAULT_OFFSET        0           /* tare offset in raw counts */
 #define HX711_TIMEOUT_MS            50u
 #define WEIGHT_TOTAL_CAUTION_KG     80.0f
@@ -200,11 +203,15 @@
 #define LED_IND_MODE_BIT            1u       /* 0 = FIXED spread, 1 = RESPONSIVE spread */
 #define LED_INDICATOR_CFG_DEFAULT   0u       /* base off, fixed */
 
-/* ---- Proximity sensor logical mapping (EXTI line = bit position) ---------- */
-#define PROX_FACING_FRONT           6u       /* PC6 */
-#define PROX_FACING_REAR            7u       /* PC7 */
-#define PROX_FACING_LEFT            8u       /* PC8 */
-#define PROX_FACING_RIGHT           9u       /* PC9 */
+/* ---- Proximity sensor logical mapping (EXTI line = bit position) ----------
+ * One sensor per cargo-platform corner, same FL/FR/RL/RR convention as the
+ * load cells. PROX_CORNER_* map each logical corner to the physical EXTI
+ * bit/pin it's wired to (6..9 → PC6..PC9). Correct these four after a bench
+ * check instead of re-wiring. */
+#define PROX_CORNER_FL              8u       /* PC6 */
+#define PROX_CORNER_FR              9u       /* PC7 */
+#define PROX_CORNER_RL              6u       /* PC8 */
+#define PROX_CORNER_RR              7u       /* PC9 */
 #define PROX_ACTIVE_LOW             1        /* E18-D80NK NPN: pin low = obstacle */
 
 /* ---- I2C bus device addresses (7-bit) -------------------------------------
@@ -221,10 +228,10 @@
  * ESP32 ring + GUI can show them. Bands are runtime-tunable (PARAM_LIDAR_*). */
 #define LIDAR_MAX_SEGMENTS          32u      /* wire/telemetry cap on interval count */
 #define LIDAR_STALE_MS              500u     /* no fresh segments within this → treat as clear */
-#define LIDAR_VALID_MAX_MM          8000u    /* "clear" sentinel; empty/absent bins report this */
-#define LIDAR_CAUTION_MM            800u     /* < this (min over segments) → CAUTION (0.5) */
-#define LIDAR_CRITICAL_MM           400u     /* < this → CRITICAL (0.2) */
-#define LIDAR_ESTOP_MM              200u     /* < this → auto-clearing E-STOP */
+#define LIDAR_VALID_MAX_MM          2200u    /* "clear" sentinel; empty/absent bins report this */
+#define LIDAR_CAUTION_MM            1500u     /* < this (min over segments) → CAUTION (0.5) */
+#define LIDAR_CRITICAL_MM           1000u     /* < this → CRITICAL (0.2) */
+#define LIDAR_ESTOP_MM              500u     /* < this → auto-clearing E-STOP */
 
 /* ---- Battery monitor (INA219 bus voltage only — no current sense) ----------
  * One INA219 reads 3S bus voltage (LSB 4 mV, BRNG=1 → 32 V FSR). It hangs off

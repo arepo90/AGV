@@ -6,7 +6,13 @@
 
 #define PROX_MASK ((1u<<6) | (1u<<7) | (1u<<8) | (1u<<9))   /* PC6..PC9 / EXTI6..9 */
 
-static volatile uint16_t s_obstructed = 0;   /* bits 6..9 */
+/* Logical corner (FL,FR,RL,RR) → physical EXTI bit, from the wiring constants
+ * in config.h. */
+static const uint16_t s_corner_bit[4] = {
+    PROX_CORNER_FL, PROX_CORNER_FR, PROX_CORNER_RL, PROX_CORNER_RR,
+};
+
+static volatile uint16_t s_obstructed = 0;   /* raw bits 6..9, physical wiring */
 
 static uint16_t read_now(void) {
     uint16_t pins = (uint16_t)(GPIOC->IDR) & PROX_MASK;
@@ -17,7 +23,16 @@ static uint16_t read_now(void) {
 #endif
 }
 
-uint16_t proximity_obstructed(void) { return s_obstructed; }
+/* Remap physical wiring bits to the canonical FL=bit6,FR=bit7,RL=bit8,RR=bit9
+ * telemetry layout, independent of which physical pin each corner is on. */
+uint16_t proximity_obstructed(void) {
+    uint16_t raw = s_obstructed;
+    uint16_t out = 0;
+    for (uint32_t c = 0; c < 4; c++) {
+        if (raw & (1u << s_corner_bit[c])) out |= (1u << (6u + c));
+    }
+    return out;
+}
 
 void proximity_init(void) {
 #if DISABLE_PROXIMITY

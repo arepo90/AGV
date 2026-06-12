@@ -39,15 +39,17 @@ def generate_launch_description():
         description='Status-panel refresh rate sent to the Arduino.',
     )
     lidar_fov_min_arg = DeclareLaunchArgument(
-        'lidar_fov_min_deg', default_value='-90.0',
-        description='LiDAR usable FOV start (maps to the "0°" LED indicator point).',
+        'lidar_fov_min_deg', default_value='80.0',
+        description='LiDAR usable FOV start, normalised to [0, 360) '
+                    '(maps to the "0°" LED indicator point).',
     )
     lidar_fov_max_arg = DeclareLaunchArgument(
-        'lidar_fov_max_deg', default_value='90.0',
-        description='LiDAR usable FOV end (maps to the "MAX_FOV°" LED indicator point).',
+        'lidar_fov_max_deg', default_value='280.0',
+        description='LiDAR usable FOV end, normalised to [0, 360); 90-270 covers the '
+                    'rear half (wraps through +-180°) (maps to the "MAX_FOV°" LED indicator point).',
     )
     lidar_bin_arg = DeclareLaunchArgument(
-        'lidar_bin_deg', default_value='10.0',
+        'lidar_bin_deg', default_value='15.0',
         description='LiDAR angular bin width Z° (average distance per interval).',
     )
     lidar_mask_min_arg = DeclareLaunchArgument(
@@ -59,7 +61,7 @@ def generate_launch_description():
         description='LiDAR occluded-sector end Y°.',
     )   
     enable_lidar_arg = DeclareLaunchArgument(
-        'enable_lidar', default_value='false',
+        'enable_lidar', default_value='true',
         description='Start lidar_node. Off by default — the LiDAR is not connected yet. '
                     'Re-enable with enable_lidar:=true (and set DISABLE_LIDAR=0 in the STM32 '
                     'config.h so the firmware acts on the segments).',

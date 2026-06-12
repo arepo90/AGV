@@ -11,11 +11,13 @@ distance-band policy and echoes them back up in TLM_SENSORS for the LED ring.
 Keeping the STM32 as the single safety authority is deliberate — see
 ``reference/architecture.md``.
 
-The window/mask/bin geometry is parameterised; the defaults are placeholders. Set
-``fov_min_deg`` / ``fov_max_deg`` to the usable field of view (these map to the two
-LiDAR LED indicator points, "0°" and "MAX_FOV°"), ``mask_min_deg`` / ``mask_max_deg``
-to the occluded sector to ignore (no-op while min > max), and ``bin_deg`` to the
-interval width Z°.
+The window/mask/bin geometry is parameterised; the defaults are placeholders. Scan
+angles are normalised to [0, 360) before masking/binning, so windows that wrap
+through +-180° can be expressed as a plain range (e.g. 90°-270° for the rear half).
+Set ``fov_min_deg`` / ``fov_max_deg`` to the usable field of view (these map to the
+two LiDAR LED indicator points, "0°" and "MAX_FOV°"), ``mask_min_deg`` /
+``mask_max_deg`` to the occluded sector to ignore (no-op while min > max), and
+``bin_deg`` to the interval width Z°.
 """
 
 from __future__ import annotations
@@ -82,12 +84,13 @@ class LidarNode(Node):
     def __init__(self) -> None:
         super().__init__('lidar_node')
 
-        self.declare_parameter('input_topic', '/agv/point_cloud')
+        self.declare_parameter('input_topic', '/scan')
         self.declare_parameter('output_topic', '/agv/lidar_segments')
         # Usable FOV → the two LiDAR LED indicator points (0° and MAX_FOV°).
-        self.declare_parameter('fov_min_deg', -90.0)
-        self.declare_parameter('fov_max_deg', 90.0)
-        self.declare_parameter('bin_deg', 10.0)            # Z° interval width
+        # Angles are normalised to [0, 360); 90-270 is the rear half (wraps +-180°).
+        self.declare_parameter('fov_min_deg', 90.0)
+        self.declare_parameter('fov_max_deg', 270.0)
+        self.declare_parameter('bin_deg', 15.0)            # Z° interval width
         # Occluded sector to drop (robot body). No-op while min > max — set later.
         self.declare_parameter('mask_min_deg', 1.0)        # X°
         self.declare_parameter('mask_max_deg', -1.0)       # Y°
@@ -113,7 +116,9 @@ class LidarNode(Node):
             f'mask [{self._mask_min}, {self._mask_max}]°)')
 
     def _on_scan(self, scan: LaserScan) -> None:
-        angles = [math.degrees(scan.angle_min + i * scan.angle_increment)
+        # Normalised to [0, 360) so fov/mask windows can span +-180°
+        # (e.g. fov_min_deg=90, fov_max_deg=270 for the rear half).
+        angles = [math.degrees(scan.angle_min + i * scan.angle_increment) % 360.0
                   for i in range(len(scan.ranges))]
         seg = segment_scan(angles, scan.ranges, scan.range_min, scan.range_max,
                            self._fov_min, self._fov_max, self._bin,
